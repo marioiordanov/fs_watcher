@@ -240,7 +240,8 @@ void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, 
         {
             printf("Folder %s was added \n", paths[0]);
         }
-        else if (is_file_modified(eventFlags[0], paths[0])) {
+        else if (is_file_modified(eventFlags[0], paths[0]))
+        {
             printf("File %s was modified\n", paths[0]);
         }
         else
