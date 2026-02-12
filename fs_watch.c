@@ -174,7 +174,7 @@ bool is_object_added(FSEventStreamEventFlags object_flag, FSEventStreamEventFlag
         return false;
     }
 
-    if (has_flag(flag, kFSEventStreamEventFlagItemRenamed) && does_object_exist(file_path))
+    if (!has_flag(flag, kFSEventStreamEventFlagItemModified) &&has_flag(flag, kFSEventStreamEventFlagItemRenamed) && does_object_exist(file_path))
     {
         return true;
     }
@@ -206,8 +206,8 @@ void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, 
 {
     (void)streamRef;
     (void)clientCallBackInfo;
-
     const char *const *paths = (const char *const *)eventPaths;
+
     if (numEvents == 1)
     {
         if (is_DS_Store_path(paths[0]))
@@ -244,20 +244,6 @@ void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, 
         {
             printf("File %s was modified\n", paths[0]);
         }
-        else
-        {
-            for (size_t i = 0; i < numEvents; i++)
-            {
-                if (is_DS_Store_path(paths[i]))
-                {
-                    printf("ds_store\n");
-                    continue;
-                }
-                printf("path:%s id:%llu ", paths[i], eventIds[i]);
-                translate_fs_event_flag(eventFlags[i]);
-                printf("\n");
-            }
-        }
     }
     else
     {
@@ -268,20 +254,6 @@ void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, 
         else if (is_folder_renamed(numEvents, eventFlags, eventIds, paths))
         {
             printf("Folder renamed from %s to %s\n", paths[0], paths[1]);
-        }
-        else
-        {
-            for (size_t i = 0; i < numEvents; i++)
-            {
-                if (is_DS_Store_path(paths[i]))
-                {
-                    printf("ds_store\n");
-                    continue;
-                }
-                printf("path:%s id:%llu ", paths[i], eventIds[i]);
-                translate_fs_event_flag(eventFlags[i]);
-                printf("\n");
-            }
         }
     }
 }
