@@ -278,10 +278,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("Start watching for changes in %s\n", dir_path);
-
     wait_for_ctrl_c();
-    printf("Cleanning up....\n");
 
     FSEventStreamInvalidate(streamRef);
     FSEventStreamStop(streamRef);
