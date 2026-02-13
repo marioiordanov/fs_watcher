@@ -6,41 +6,18 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <pthread.h>
+#include <signal.h>
 
 const CFTimeInterval latency = 0.5;
 
-static void translate_fs_event_flag(FSEventStreamEventFlags f)
-{
-    struct
-    {
-        FSEventStreamEventFlags flag;
-        char *translation;
-    } bits[] = {
-        {kFSEventStreamEventFlagItemIsDir, "Folder"},
-        {kFSEventStreamEventFlagItemIsFile, "File"},
-        {kFSEventStreamEventFlagItemXattrMod, "ExtendedAttributesChanged"},
-        {kFSEventStreamEventFlagItemChangeOwner, "OwnerChanged"},
-        {kFSEventStreamEventFlagItemFinderInfoMod, "FinderInfoChanged"},
-        {kFSEventStreamEventFlagItemModified, "ContentsChanged"},
-        {kFSEventStreamEventFlagItemRenamed, "Renamed"},
-        {kFSEventStreamEventFlagItemInodeMetaMod, "MetadataChanged"},
-        {kFSEventStreamEventFlagItemRemoved, "Removed"},
-        {kFSEventStreamEventFlagItemCreated, "Created"}};
+static void wait_for_ctrl_c() {
+    sigset_t ss = {0};
+    sigaddset(&ss, SIGINT);
+    sigaddset(&ss, SIGTERM);
+    sigaddset(&ss, SIGQUIT);
 
-    bool found = false;
-    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++)
-    {
-        if (bits[i].flag & f)
-        {
-            found = true;
-            printf("%s ", bits[i].translation);
-        }
-    }
-
-    if (!found)
-    {
-        printf("Unrecognized event %d", f);
-    }
+    int received_signal = {0};
+    sigwait(&ss, &received_signal);
 }
 
 bool does_object_exist(const char *path)
@@ -301,8 +278,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("press key to exit\n");
-    getchar();
+    wait_for_ctrl_c();
+    printf("Cleanning up....");
 
     FSEventStreamInvalidate(streamRef);
     FSEventStreamStop(streamRef);
