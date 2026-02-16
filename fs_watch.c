@@ -4,11 +4,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <signal.h>
 #include <pthread.h>
 #include <signal.h>
+#include <unistd.h>
 
 const CFTimeInterval latency = 0.5;
+const uint8_t FILE_TYPE = 1;
+const uint8_t FOLDER_TYPE = 2;
+const uint8_t ADDED = 3;
+const uint8_t MODIFIED = 4;
+const uint8_t CREATED = 5;
+const uint8_t RENAMED = 6;
+const uint8_t REMOVED = 7;
+
+// type, len(from_path)-hi, len(from_path)-low, from_path, len(to_path), to_path
+const char* OBJECT_RENAMED_FORMAT = "%d%d%d%s";
 
 static void wait_for_ctrl_c() {
     sigset_t ss = {0};
@@ -18,6 +28,45 @@ static void wait_for_ctrl_c() {
 
     int received_signal = {0};
     sigwait(&ss, &received_signal);
+}
+
+
+static void write_string_with_length_prefixed_to_stdout(const char* str) {
+    int len = strlen(str);
+
+    uint8_t lo = len & 0xFF;
+    uint8_t hi = len >> 8;
+
+    write(STDOUT_FILENO, &hi, 1);
+    write(STDOUT_FILENO, &lo, 1);
+    write(STDOUT_FILENO, str, (size_t)len);
+}
+
+static void send_object_renamed(uint8_t object_type, const char* from_path, const char* to_path) {
+    write(STDOUT_FILENO, &RENAMED, 1);
+    write(STDERR_FILENO, &object_type, 1);
+    write_string_with_length_prefixed_to_stdout(from_path);
+    write_string_with_length_prefixed_to_stdout(to_path);
+
+    fflush(stdout);
+}
+
+static void send_object_removed(uint8_t object_type,const char* path) {
+    write(STDOUT_FILENO, &REMOVED, 1);
+    write(STDOUT_FILENO, &object_type, 1);
+    write_string_with_length_prefixed_to_stdout(path);
+}
+
+static void send_object_modified(uint8_t object_type, const char* path) {
+    write(STDOUT_FILENO, &MODIFIED, 1);
+    write(STDOUT_FILENO, &object_type, 1);
+    write_string_with_length_prefixed_to_stdout(path);
+}
+
+static void send_object_created(uint8_t object_type, const char* path) {
+    write(STDOUT_FILENO, &CREATED, 1);
+    write(STDOUT_FILENO, &object_type, 1);
+    write_string_with_length_prefixed_to_stdout(path);
 }
 
 bool does_object_exist(const char *path)
@@ -286,4 +335,5 @@ int main(int argc, char **argv)
     FSEventStreamRelease(streamRef);
     CFRelease(paths);
     CFRelease(path);
+    return 0;
 }
