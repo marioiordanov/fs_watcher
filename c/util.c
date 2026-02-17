@@ -24,6 +24,8 @@ bool is_DS_Store_path(const char* path)
 
 void wait_for_ctrl_c(void) {
     sigset_t ss = {0};
+
+    sigemptyset(&ss);
     sigaddset(&ss, SIGINT);
     sigaddset(&ss, SIGTERM);
     sigaddset(&ss, SIGQUIT);

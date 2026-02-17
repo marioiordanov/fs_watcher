@@ -25,8 +25,8 @@ bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count,
 
     for (size_t i = 0; i < events_count; i++)
     {
-        bool is_file = has_flag(eventFlags[0], object_flag);
-        bool is_renamed = has_flag(eventFlags[0], kFSEventStreamEventFlagItemRenamed);
+        bool is_file = has_flag(eventFlags[i], object_flag);
+        bool is_renamed = has_flag(eventFlags[i], kFSEventStreamEventFlagItemRenamed);
 
         if (!(is_file && is_renamed))
         {
@@ -156,7 +156,6 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
     {
         if (is_DS_Store_path(paths[0]))
         {
-            printf("ds store'\n");
             return;
         }
 

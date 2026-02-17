@@ -37,6 +37,7 @@ static bool write_length_prefix_string(int fd, const char *str)
 {
     if (!str)
     {
+        write_u16_be(fd, 0);
         return true;
     }
     size_t len = strlen(str);
@@ -49,7 +50,7 @@ static bool write_length_prefix_string(int fd, const char *str)
 
 static bool send_one_path(OpCode op, ObjectType ty, const char *path)
 {
-    return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_length_prefix_string(STDOUT_FILENO, path) && (fflush(stdout) == 0);
+    return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_length_prefix_string(STDOUT_FILENO, path);
 }
 
 bool send_object_added(ObjectType object_type, const char *path)
@@ -77,5 +78,5 @@ bool send_object_renamed(ObjectType object_type, const char *from_path, const ch
     return write_u8(STDOUT_FILENO, (uint8_t)OP_RENAMED) &&
            write_u8(STDOUT_FILENO, (uint8_t)object_type) &&
            write_length_prefix_string(STDOUT_FILENO, from_path) &&
-           write_length_prefix_string(STDOUT_FILENO, to_path) && (fflush(stdout) == 0);
+           write_length_prefix_string(STDOUT_FILENO, to_path);
 }
