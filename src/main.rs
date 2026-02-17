@@ -1,6 +1,46 @@
 use std::io::{self, Read, Result};
 use std::process::{ChildStdout, Command, Stdio};
 
+enum ObjectType {
+    File = 1,
+    Folder = 2,
+}
+
+impl TryFrom<u8> for ObjectType {
+    type Error = ();
+
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+        match value {
+            1 => Ok(ObjectType::File),
+            2 => Ok(ObjectType::Folder),
+            _ => Err(())
+        }
+    }
+
+}
+enum OperationType {
+    Added = 3,
+    Modified = 4,
+    Created = 5,
+    Renamed = 6,
+    Removed = 7,
+}
+
+impl TryFrom<u8> for OperationType {
+    type Error = ();
+
+    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+        match value{
+            3 => Ok(OperationType::Added),
+            4 => Ok(OperationType::Modified),
+            5 => Ok(OperationType::Created),
+            6 => Ok(OperationType::Renamed),
+            7 => Ok(OperationType::Removed),
+            _ => Err(()),
+        }
+    }
+}
+
 enum Event {
     FileRemoved(String),
     FolderRemoved(String),
@@ -32,7 +72,7 @@ fn main() -> Result<()> {
     assert!(build_c_program.status.success());
 
     let mut fs_watch_process = Command::new("./fs_watch")
-    .arg("./тестова")
+        .arg("./тестова")
         .stdout(Stdio::piped())
         .stdin(Stdio::null())
         .spawn()?;
@@ -59,7 +99,7 @@ fn main() -> Result<()> {
         }
 
         let (operation_type, object_type) = match stdout.read_exact(&mut type_buffer) {
-            Ok(..) => (type_buffer[0], type_buffer[1]),
+            Ok(..) => (OperationType::try_from(type_buffer[0]).unwrap(), ObjectType::try_from(type_buffer[1]).unwrap()),
             // stream was closed
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 break;
@@ -68,21 +108,6 @@ fn main() -> Result<()> {
                 return err;
             }
         };
-
-        /*
-                typedef enum {
-            OBJECT_FILE   = 1,
-            OBJECT_FOLDER = 2,
-        } ObjectType;
-
-        typedef enum {
-            OP_ADDED    = 3,
-            OP_MODIFIED = 4,
-            OP_CREATED  = 5,
-            OP_RENAMED  = 6,
-            OP_REMOVED  = 7,
-        } OpCode;
-                 */
 
         let read_str_fn = |stream: &mut ChildStdout,
                            len_buffer: &mut [u8; 2],
@@ -102,22 +127,22 @@ fn main() -> Result<()> {
 
         let first_path = read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer)?;
 
-        let action = match (operation_type, object_type) {
-            (6, _) => Event::Renamed {
+        let event = match (operation_type, object_type) {
+            (OperationType::Renamed, _) => Event::Renamed {
                 from: first_path,
                 to: read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer)?,
             },
-            (7, 1) => Event::FileRemoved(first_path),
-            (7, 2) => Event::FolderRemoved(first_path),
-            (3, 1) => Event::FileAdded(first_path),
-            (3, 2) => Event::FolderAdded(first_path),
-            (4, 1) => Event::FileModified(first_path),
-            (5, 1) => Event::FileCreated(first_path),
-            (5, 2) => Event::FolderCreated(first_path),
-            (_, _) => panic!("Should not come into this case"),
+            (OperationType::Removed, ObjectType::File) => Event::FileRemoved(first_path),
+            (OperationType::Removed, ObjectType::Folder) => Event::FolderRemoved(first_path),
+            (OperationType::Added, ObjectType::File) => Event::FileAdded(first_path),
+            (OperationType::Added, ObjectType::Folder) => Event::FolderAdded(first_path),
+            (OperationType::Modified, ObjectType::File) => Event::FileModified(first_path),
+            (OperationType::Created, ObjectType::File) => Event::FileCreated(first_path),
+            (OperationType::Created, ObjectType::Folder) => Event::FolderCreated(first_path),
+            _ => panic!("Impossible case")
         };
 
-        println!("{action}");
+        println!("{event}");
     }
 
     Ok(())
