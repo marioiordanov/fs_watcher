@@ -75,6 +75,7 @@ impl TryFrom<u8> for OperationType {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum Event {
     FileRemoved(String),
     FolderRemoved(String),
