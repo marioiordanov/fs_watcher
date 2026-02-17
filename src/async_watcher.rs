@@ -10,6 +10,32 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::util;
 
+/// Async file-system watcher backed by the embedded `fs_watch` helper process.
+///
+/// # How to use this library
+///
+/// 1. Call `AsyncWatcher::spawn()` with the directory you want to watch.
+/// 2. Read events from the returned `EventStream`.
+/// 3. Call `stop()` (or drop the watcher) to terminate the helper process.
+///
+/// ```no_run
+/// use std::path::Path;
+/// use tokio_stream::StreamExt;
+/// use test_watcher::async_watcher::AsyncWatcher;
+///
+/// #[tokio::main]
+/// async fn main() -> std::io::Result<()> {
+///     let (mut watcher, mut events) = AsyncWatcher::spawn(Path::new(".")).await?;
+///
+///     while let Some(evt) = events.next().await {
+///         println!("{}", evt?);
+///     }
+///
+///     watcher.stop().await?;
+///     Ok(())
+/// }
+/// ```
+
 enum ObjectType {
     File = 1,
     Folder = 2,
@@ -76,19 +102,37 @@ impl std::fmt::Display for Event {
 }
 
 pub struct AsyncWatcher {
+    /// Handle to the running helper process (`fs_watch`).
     fs_watch_process: Child,
 }
 
+/// Stream of parsed watcher events.
+///
+/// Each item is:
+/// - `Ok(Event)` when a protocol frame is decoded successfully
+/// - `Err(io::Error)` when protocol/IO decoding fails
 pub type EventStream = ReceiverStream<io::Result<Event>>;
 
 impl AsyncWatcher {
-    /// Stop the helper explicitly.
+    /// Stop the helper process explicitly.
+    ///
+    /// This is best-effort: if the process already exited, this still returns `Ok(())`.
     pub async fn stop(&mut self) -> io::Result<()> {
         let _ = self.fs_watch_process.kill().await; // best-effort
         let _ = self.fs_watch_process.wait().await;
         Ok(())
     }
 
+    /// Read and decode a single event from helper stdout.
+    ///
+    /// Protocol:
+    /// - `[op:u8][object:u8][len:u16be][path bytes...]`
+    /// - rename adds another `[len:u16be][path bytes...]` for destination.
+    ///
+    /// Returns:
+    /// - `Ok(Some(Event))` for one decoded event
+    /// - `Ok(None)` on clean EOF (helper stdout closed)
+    /// - `Err(..)` for malformed data or read failure
     async fn next_event(
         mut stdout: &mut ChildStdout,
         type_buffer: &mut [u8; 2],
@@ -106,7 +150,6 @@ impl AsyncWatcher {
             ),
             // stream was closed
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                println!("s");
                 return Ok(None);
             }
             Err(err) => {
@@ -152,6 +195,11 @@ impl AsyncWatcher {
 
         Ok(Some(event))
     }
+
+    /// Spawn the embedded helper process and return `(watcher_handle, event_stream)`.
+    ///
+    /// If the helper exits very quickly (for example invalid path/arguments),
+    /// this returns an error instead of a watcher.
     pub async fn spawn(dir: &Path) -> io::Result<(Self, EventStream)> {
         let fs_watch_code = util::ensure_helper_on_disk()?;
         let mut fs_watch_process = Command::new(fs_watch_code)
@@ -176,13 +224,7 @@ impl AsyncWatcher {
         let mut stdout = fs_watch_process.stdout.take().expect("stdout piped");
         let (tx, rx) = mpsc::channel::<io::Result<Event>>(256);
 
-        if let Ok(Some(_)) = fs_watch_process.try_wait() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Unable to launch process",
-            ));
-        }
-
+        // Background task: reads binary protocol frames and pushes decoded events.
         tokio::spawn(async move {
             let mut type_buffer = [0u8; 2];
             let mut path_length_buffer = [0u8; 2];
@@ -219,6 +261,7 @@ impl AsyncWatcher {
 
 impl Drop for AsyncWatcher {
     fn drop(&mut self) {
+        // If user did not call `stop()`, still try to terminate helper on drop.
         let _ = self.fs_watch_process.start_kill();
     }
 }
