@@ -165,42 +165,42 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
 
         if (is_file_removed(f, path))
         {
-            printf("%s was removed\n", paths[0]);
+            send_object_removed(OBJECT_FILE, path);
         }
         else if (is_folder_removed(f, path))
         {
-            printf("Folder %s was removed\n", paths[0]);
+            send_object_removed(OBJECT_FOLDER, path);
         }
         else if (is_file_created(f, path))
         {
-            printf("File at path %s was created\n", paths[0]);
+            send_object_created(OBJECT_FILE, path);
         }
         else if (is_folder_created(f, path))
         {
-            printf("Folder at path %s was created\n", paths[0]);
+            send_object_created(OBJECT_FOLDER, path);
         }
         else if (is_file_added(f, path))
         {
-            printf("File %s was added\n", paths[0]);
+            send_object_added(OBJECT_FILE, path);
         }
         else if (is_folder_added(f, path))
         {
-            printf("Folder %s was added \n", paths[0]);
+            send_object_added(OBJECT_FOLDER, path);
         }
         else if (is_file_modified(f, path))
         {
-            printf("File %s was modified\n", paths[0]);
+            send_object_modified(OBJECT_FILE, path);
         }
     }
     else
     {
         if (is_file_renamed(numEvents, eventFlags, eventIds, paths))
         {
-            printf("File renamed from %s to %s\n", paths[0], paths[1]);
+            send_object_renamed(OBJECT_FILE, paths[0], paths[1]);
         }
         else if (is_folder_renamed(numEvents, eventFlags, eventIds, paths))
         {
-            printf("Folder renamed from %s to %s\n", paths[0], paths[1]);
+            send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
         }
     }
 }
