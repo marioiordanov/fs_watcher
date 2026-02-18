@@ -206,7 +206,7 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
 
 bool run_watcher(const char* dir_path, double latency) {
     if (!dir_path || !does_object_exist(dir_path)) {
-        fprintf(stderr, "invalid path\n");
+        fprintf(stderr, "invalid path: %s\n", dir_path);
         return false;
     }
 
@@ -248,9 +248,8 @@ bool run_watcher(const char* dir_path, double latency) {
     }
 
     wait_for_ctrl_c();
-
-    FSEventStreamInvalidate(streamRef);
     FSEventStreamStop(streamRef);
+    FSEventStreamInvalidate(streamRef);
     dispatch_release(serial_queue);
     FSEventStreamRelease(streamRef);
     CFRelease(paths);
