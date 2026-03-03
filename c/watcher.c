@@ -10,6 +10,26 @@ static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlag
     return (flag & bit) != 0;
 }
 
+bool is_file_modified_via_tmp_file(size_t events_count, const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+{
+    if (events_count != 2)
+    {
+        return false;
+    }
+
+    if (strcmp(paths[0], paths[1]) != 0)
+    {
+        return false;
+    }
+
+    if (has_flag(eventFlags[0], kFSEventStreamEventFlagItemRemoved) && has_flag(eventFlags[0], kFSEventStreamEventFlagItemIsFile) && has_flag(eventFlags[1], kFSEventStreamEventFlagItemIsFile) &&
+        has_flag(eventFlags[1], kFSEventStreamEventFlagItemRenamed))
+    {
+        return true;
+    }
+    return false;
+}
+
 bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
 {
     if (events_count != 2)
@@ -118,7 +138,7 @@ static bool is_object_added(FSEventStreamEventFlags object_flag, FSEventStreamEv
         return false;
     }
 
-    if (!has_flag(flag, kFSEventStreamEventFlagItemModified) &&has_flag(flag, kFSEventStreamEventFlagItemRenamed) && does_object_exist(file_path))
+    if (!has_flag(flag, kFSEventStreamEventFlagItemModified) && has_flag(flag, kFSEventStreamEventFlagItemRenamed) && does_object_exist(file_path))
     {
         return true;
     }
@@ -201,11 +221,16 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         {
             send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
         }
+        else if (is_file_modified_via_tmp_file(numEvents, eventFlags, paths)) {
+            send_object_modified(OBJECT_FILE, paths[0]);
+        }
     }
 }
 
-bool run_watcher(const char* dir_path, double latency) {
-    if (!dir_path || !does_object_exist(dir_path)) {
+bool run_watcher(const char *dir_path, double latency)
+{
+    if (!dir_path || !does_object_exist(dir_path))
+    {
         fprintf(stderr, "invalid path: %s\n", dir_path);
         return false;
     }
