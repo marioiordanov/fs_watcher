@@ -77,14 +77,14 @@ impl TryFrom<u8> for OperationType {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    FileCreated(String),
     FileRemoved(String),
-    FolderRemoved(String),
-    FolderAdded(String),
     FileAdded(String),
     FileModified(String),
-    Renamed { from: String, to: String },
-    FileCreated(String),
+    FolderRemoved(String),
+    FolderAdded(String),
     FolderCreated(String),
+    Renamed { from: String, to: String },
 }
 
 impl std::fmt::Display for Event {
