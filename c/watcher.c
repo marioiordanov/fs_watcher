@@ -2,6 +2,9 @@
 
 #include <CoreServices/CoreServices.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <fts.h>
+#include <stdio.h>
+#include <string.h>
 #include "util.h"
 #include "protocol.h"
 
@@ -28,6 +31,49 @@ bool is_file_modified_via_tmp_file(size_t events_count, const FSEventStreamEvent
         return true;
     }
     return false;
+}
+
+typedef bool (*send_object_fn)(ObjectType object_type, const char *path);
+
+static void send_folder_contents_recursive(const char *folder_path, send_object_fn sender)
+{
+    if (!folder_path || !sender)
+    {
+        return;
+    }
+
+    char *paths[] = {(char *)folder_path, NULL};
+    FTS *tree = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL, NULL);
+    if (tree == NULL)
+    {
+        fprintf(stderr, "failed to open folder tree: %s\n", folder_path);
+        return;
+    }
+
+    FTSENT *node = NULL;
+    while ((node = fts_read(tree)) != NULL)
+    {
+        if (node->fts_level == 0)
+        {
+            continue;
+        }
+
+        if (is_DS_Store_path(node->fts_path))
+        {
+            continue;
+        }
+
+        if (node->fts_info == FTS_F)
+        {
+            sender(OBJECT_FILE, node->fts_path);
+        }
+        else if (node->fts_info == FTS_D)
+        {
+            sender(OBJECT_FOLDER, node->fts_path);
+        }
+    }
+
+    fts_close(tree);
 }
 
 bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
@@ -180,7 +226,7 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         }
 
         const FSEventStreamEventFlags f = eventFlags[0];
-        const char* path = paths[0];
+        const char *path = paths[0];
 
         if (is_file_removed(f, path))
         {
@@ -197,6 +243,7 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         else if (is_folder_created(f, path))
         {
             send_object_created(OBJECT_FOLDER, path);
+            send_folder_contents_recursive(path, send_object_created);
         }
         else if (is_file_added(f, path))
         {
@@ -205,6 +252,7 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         else if (is_folder_added(f, path))
         {
             send_object_added(OBJECT_FOLDER, path);
+            send_folder_contents_recursive(path, send_object_added);
         }
         else if (is_file_modified(f, path))
         {
@@ -221,7 +269,8 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         {
             send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
         }
-        else if (is_file_modified_via_tmp_file(numEvents, eventFlags, paths)) {
+        else if (is_file_modified_via_tmp_file(numEvents, eventFlags, paths))
+        {
             send_object_modified(OBJECT_FILE, paths[0]);
         }
     }
