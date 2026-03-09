@@ -84,7 +84,8 @@ pub enum Event {
     FolderRemoved(String),
     FolderAdded(String),
     FolderCreated(String),
-    Renamed { from: String, to: String },
+    FileRenamed { from: String, to: String },
+    FolderRenamed {from: String, to: String}
 }
 
 impl std::fmt::Display for Event {
@@ -95,7 +96,8 @@ impl std::fmt::Display for Event {
             Event::FolderAdded(path) => write!(f, "folder added: {path}"),
             Event::FileAdded(path) => write!(f, "file added: {path}"),
             Event::FileModified(path) => write!(f, "file modified: {path}"),
-            Event::Renamed { from, to } => write!(f, "renamed: {from} -> {to}"),
+            Event::FileRenamed { from, to } => write!(f, "file renamed: {from} -> {to}"),
+            Event::FolderRenamed { from, to } => write!(f, "folder renamed: {from} -> {to}"),
             Event::FileCreated(path) => write!(f, "file created: {path}"),
             Event::FolderCreated(path) => write!(f, "folder created: {path}"),
         }
@@ -180,7 +182,11 @@ impl AsyncWatcher {
             read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?;
 
         let event = match (operation_type, object_type) {
-            (OperationType::Renamed, _) => Event::Renamed {
+            (OperationType::Renamed, ObjectType::File) => Event::FileRenamed {
+                from: first_path,
+                to: read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?,
+            },
+            (OperationType::Renamed, ObjectType::Folder) => Event::FolderRenamed {
                 from: first_path,
                 to: read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?,
             },
