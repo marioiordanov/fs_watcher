@@ -8,6 +8,9 @@
 #include "util.h"
 #include "protocol.h"
 
+const size_t RENAMED_EVENTS_COUNT = 2;
+const size_t FILE_MODIFIED_VIA_TMP_EVENTS_COUNT = 2;
+
 static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlags bit)
 {
     return (flag & bit) != 0;
@@ -15,7 +18,7 @@ static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlag
 
 bool is_file_modified_via_tmp_file(size_t events_count, const FSEventStreamEventFlags *eventFlags, const char *const *paths)
 {
-    if (events_count != 2)
+    if (events_count < FILE_MODIFIED_VIA_TMP_EVENTS_COUNT)
     {
         return false;
     }
@@ -78,7 +81,7 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
 
 bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
 {
-    if (events_count != 2)
+    if (events_count < RENAMED_EVENTS_COUNT)
     {
         return false;
     }
@@ -89,12 +92,12 @@ bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count,
         return false;
     }
 
-    for (size_t i = 0; i < events_count; i++)
+    for (size_t i = 0; i < RENAMED_EVENTS_COUNT; i++)
     {
-        bool is_file = has_flag(eventFlags[i], object_flag);
+        bool is_it_the_same_object_type = has_flag(eventFlags[i], object_flag);
         bool is_renamed = has_flag(eventFlags[i], kFSEventStreamEventFlagItemRenamed);
 
-        if (!(is_file && is_renamed))
+        if (!(is_it_the_same_object_type && is_renamed))
         {
             return false;
         }
@@ -212,68 +215,117 @@ static bool is_file_modified(FSEventStreamEventFlags flag, const char *file_path
     return false;
 }
 
+static size_t handle_renamed_object(size_t numEvents, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths) {
+    size_t consumedEvents = 0;
+
+    if ( is_file_renamed(numEvents, eventFlags, eventIds, paths)) {
+        consumedEvents = RENAMED_EVENTS_COUNT;
+        send_object_renamed(OBJECT_FILE, paths[0], paths[1]);
+    }else if ( is_folder_renamed(numEvents, eventFlags, eventIds, paths) ) {
+        consumedEvents = RENAMED_EVENTS_COUNT;
+        send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
+    }
+
+    return consumedEvents;
+}
+
+static size_t handle_removed_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths) {
+    size_t consumedEvents = 0;
+
+    if (is_file_removed(eventFlags[0], paths[0])) {
+        consumedEvents = 1;
+        send_object_removed(OBJECT_FILE, paths[0]);
+    }else if (is_folder_removed(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_removed(OBJECT_FOLDER, paths[0]);
+    }
+
+    return consumedEvents;
+}
+
+static size_t handle_created_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths) {
+    size_t consumedEvents = 0;
+
+    if ( is_file_created(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_created(OBJECT_FILE, paths[0]);
+    }else if ( is_folder_created(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_created(OBJECT_FOLDER, paths[0]);
+        send_folder_contents_recursive(paths[0], send_object_created);
+    }
+
+    return consumedEvents;
+}
+
+static size_t handle_added_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths) {
+    size_t consumedEvents = 0;
+
+    if ( is_file_added(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_added(OBJECT_FILE, paths[0]);
+    }else if ( is_folder_added(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_added(OBJECT_FOLDER, paths[0]);
+        send_folder_contents_recursive(paths[0], send_object_added);
+    }
+
+    return consumedEvents;
+}
+
+static size_t handle_modified_file(size_t numEvents, const FSEventStreamEventFlags *eventFlags, const char *const *paths) {
+    size_t consumedEvents = 0;
+
+    if ( is_file_modified_via_tmp_file(numEvents, eventFlags, paths) ) {
+        consumedEvents = FILE_MODIFIED_VIA_TMP_EVENTS_COUNT;
+        send_object_modified(OBJECT_FILE, paths[0]);
+    }else if ( is_file_modified(eventFlags[0], paths[0]) ) {
+        consumedEvents = 1;
+        send_object_modified(OBJECT_FILE, paths[0]);
+    }
+
+    return consumedEvents;
+}
+
 static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, size_t numEvents, void *eventPaths, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds)
 {
     (void)streamRef;
     (void)clientCallBackInfo;
     const char *const *paths = (const char *const *)eventPaths;
 
-    if (numEvents == 1)
-    {
-        if (is_DS_Store_path(paths[0]))
+    for (size_t i = 0; i < numEvents;) {
+        size_t consumedEvents = 0;
+
+        // skip processing if it is DS_Store
+        if (is_DS_Store_path(paths[i]))
         {
-            return;
+            consumedEvents = 1;
         }
 
-        const FSEventStreamEventFlags f = eventFlags[0];
-        const char *path = paths[0];
+        if ( consumedEvents == 0 ) { // handle renamed file/folder
+            consumedEvents = handle_renamed_object(numEvents - i, &eventFlags[i], &eventIds[i], &paths[i]);
+        }
+        if ( consumedEvents == 0 ) { // handle modified file
+            consumedEvents = handle_modified_file(numEvents - i, &eventFlags[i], &paths[i]);
+        }
+        if ( consumedEvents == 0 ) { // handle removed file/folder
+            consumedEvents = handle_removed_object(&eventFlags[i], &paths[i]);
+        }
+        if ( consumedEvents == 0 ) { // handle created file/folder
+            consumedEvents = handle_created_object(&eventFlags[i], &paths[i]);
+        }
+        if ( consumedEvents == 0 ) { // handle added file/folder
+            consumedEvents = handle_added_object(&eventFlags[i], &paths[i]);
+        }
 
-        if (is_file_removed(f, path))
-        {
-            send_object_removed(OBJECT_FILE, path);
+        if (consumedEvents == 0) {
+            printf("Unhandled");
+            consumedEvents = 1;
         }
-        else if (is_folder_removed(f, path))
-        {
-            send_object_removed(OBJECT_FOLDER, path);
-        }
-        else if (is_file_created(f, path))
-        {
-            send_object_created(OBJECT_FILE, path);
-        }
-        else if (is_folder_created(f, path))
-        {
-            send_object_created(OBJECT_FOLDER, path);
-            send_folder_contents_recursive(path, send_object_created);
-        }
-        else if (is_file_added(f, path))
-        {
-            send_object_added(OBJECT_FILE, path);
-        }
-        else if (is_folder_added(f, path))
-        {
-            send_object_added(OBJECT_FOLDER, path);
-            send_folder_contents_recursive(path, send_object_added);
-        }
-        else if (is_file_modified(f, path))
-        {
-            send_object_modified(OBJECT_FILE, path);
-        }
+
+        i += consumedEvents;
     }
-    else
-    {
-        if (is_file_renamed(numEvents, eventFlags, eventIds, paths))
-        {
-            send_object_renamed(OBJECT_FILE, paths[0], paths[1]);
-        }
-        else if (is_folder_renamed(numEvents, eventFlags, eventIds, paths))
-        {
-            send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
-        }
-        else if (is_file_modified_via_tmp_file(numEvents, eventFlags, paths))
-        {
-            send_object_modified(OBJECT_FILE, paths[0]);
-        }
-    }
+
 }
 
 bool run_watcher(const char *dir_path, double latency)

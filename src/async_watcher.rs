@@ -207,10 +207,11 @@ impl AsyncWatcher {
     ///
     /// If the helper exits very quickly (for example invalid path/arguments),
     /// this returns an error instead of a watcher.
-    pub async fn spawn(dir: &Path) -> io::Result<(Self, EventStream)> {
+    pub async fn spawn(dir: &Path, latency: f32) -> io::Result<(Self, EventStream)> {
         let fs_watch_code = util::ensure_helper_on_disk()?;
         let mut fs_watch_process = Command::new(fs_watch_code)
             .arg(dir)
+            .arg(latency.to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
