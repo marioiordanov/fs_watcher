@@ -189,11 +189,11 @@ impl AsyncWatcher {
             Ok(path_str)
         };
 
-        let event = if !matches!(operation_type, OperationType::Removed) {
+        let event = if matches!(operation_type, OperationType::Removed) {
             let path = read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?;
             match object_type {
                 ObjectType::File => Event::FileRemoved(path),
-                ObjectType::Folder => Event::FileRemoved(path),
+                ObjectType::Folder => Event::FolderRemoved(path),
             }
         } else {
             let inode = match stdout.read_exact(inode_buffer).await {
