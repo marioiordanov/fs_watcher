@@ -319,7 +319,6 @@ static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBac
         }
 
         if (consumedEvents == 0) {
-            printf("Unhandled");
             consumedEvents = 1;
         }
 
