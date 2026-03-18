@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include "util.h"
 
 static bool write_all(int fd, const uint8_t *buf, size_t len)
 {
@@ -33,6 +34,22 @@ static bool write_u16_be(int fd, uint16_t v)
     return write_all(fd, be, 2);
 }
 
+static bool write_u64_be(int fd, uint64_t v)
+{
+    uint8_t be[8] = {
+        (uint8_t)(v >> 56),
+        (uint8_t)(v >> 48),
+        (uint8_t)(v >> 40),
+        (uint8_t)(v >> 32),
+        (uint8_t)(v >> 24),
+        (uint8_t)(v >> 16),
+        (uint8_t)(v >> 8),
+        (uint8_t)(v & 0xFF)
+    };
+
+    return write_all(fd, be, 8);
+}
+
 static bool write_length_prefix_string(int fd, const char *str)
 {
     if (!str)
@@ -53,19 +70,27 @@ static bool send_one_path(OpCode op, ObjectType ty, const char *path)
     return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_length_prefix_string(STDOUT_FILENO, path);
 }
 
+static bool send_one_path_with_inode(OpCode op, ObjectType ty, const char *path, ino_t inode)
+{
+    return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_u64_be(STDOUT_FILENO, inode) && write_length_prefix_string(STDOUT_FILENO, path);
+}
+
 bool send_object_added(ObjectType object_type, const char *path)
 {
-    return send_one_path(OP_ADDED, object_type, path);
+    ino_t inode = get_inode(path);
+    return send_one_path_with_inode(OP_ADDED, object_type, path, inode);
 }
 
 bool send_object_modified(ObjectType object_type, const char *path)
 {
-    return send_one_path(OP_MODIFIED, object_type, path);
+    ino_t inode = get_inode(path);
+    return send_one_path_with_inode(OP_MODIFIED, object_type, path, inode);
 }
 
 bool send_object_created(ObjectType object_type, const char *path)
 {
-    return send_one_path(OP_CREATED, object_type, path);
+    ino_t inode = get_inode(path);
+    return send_one_path_with_inode(OP_CREATED, object_type, path, inode);
 }
 
 bool send_object_removed(ObjectType object_type, const char *path)
@@ -75,8 +100,11 @@ bool send_object_removed(ObjectType object_type, const char *path)
 
 bool send_object_renamed(ObjectType object_type, const char *from_path, const char *to_path)
 {
+    ino_t inode = get_inode(to_path);
+
     return write_u8(STDOUT_FILENO, (uint8_t)OP_RENAMED) &&
            write_u8(STDOUT_FILENO, (uint8_t)object_type) &&
+           write_u64_be(STDOUT_FILENO, inode) &&
            write_length_prefix_string(STDOUT_FILENO, from_path) &&
            write_length_prefix_string(STDOUT_FILENO, to_path);
 }

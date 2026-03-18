@@ -11,6 +11,13 @@ bool does_object_exist(const char* path)
     return stat(path, &st) == 0;
 }
 
+// returns inode of a path or 0 if it does not exist
+ino_t get_inode(const char* path) {
+    struct stat st;
+
+    return stat(path, &st) == 0 ? st.st_ino : 0;
+}
+
 bool is_DS_Store_path(const char* path)
 {
     if (!path)
