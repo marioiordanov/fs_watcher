@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::{path::{Path, PathBuf}, time::Duration};
 
 use tokio::{
     io::{self, AsyncReadExt},
@@ -77,21 +77,21 @@ impl TryFrom<u8> for OperationType {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    FileCreated(String, u64),
-    FileRemoved(String),
-    FileAdded(String, u64),
-    FileModified(String, u64),
-    FolderRemoved(String),
-    FolderAdded(String, u64),
-    FolderCreated(String, u64),
+    FileCreated(PathBuf, u64),
+    FileRemoved(PathBuf),
+    FileAdded(PathBuf, u64),
+    FileModified(PathBuf, u64),
+    FolderRemoved(PathBuf),
+    FolderAdded(PathBuf, u64),
+    FolderCreated(PathBuf, u64),
     FileRenamed {
-        from: String,
-        to: String,
+        from: PathBuf,
+        to: PathBuf,
         inode: u64,
     },
     FolderRenamed {
-        from: String,
-        to: String,
+        from: PathBuf,
+        to: PathBuf,
         inode: u64,
     },
 }
@@ -99,15 +99,15 @@ pub enum Event {
 impl std::fmt::Display for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Event::FileRemoved(path, ..) => write!(f, "file removed: {path}"),
-            Event::FolderRemoved(path, ..) => write!(f, "folder removed: {path}"),
-            Event::FolderAdded(path, ..) => write!(f, "folder added: {path}"),
-            Event::FileAdded(path, ..) => write!(f, "file added: {path}"),
-            Event::FileModified(path, ..) => write!(f, "file modified: {path}"),
-            Event::FileRenamed { from, to, .. } => write!(f, "file renamed: {from} -> {to}"),
-            Event::FolderRenamed { from, to, .. } => write!(f, "folder renamed: {from} -> {to}"),
-            Event::FileCreated(path, ..) => write!(f, "file created: {path}"),
-            Event::FolderCreated(path, ..) => write!(f, "folder created: {path}"),
+            Event::FileRemoved(path, ..) => write!(f, "file removed: {}", path.display()),
+            Event::FolderRemoved(path, ..) => write!(f, "folder removed: {}", path.display()),
+            Event::FolderAdded(path, inode) => write!(f, "folder added: {} {inode}" , path.display()),
+            Event::FileAdded(path, inode) => write!(f, "file added: {} {inode}",  path.display()),
+            Event::FileModified(path, inode) => write!(f, "file modified: {} {inode}" , path.display()),
+            Event::FileRenamed { from, to, inode } => write!(f, "file renamed: {} -> {} {inode}", from.display(), to.display()),
+            Event::FolderRenamed { from, to, inode } => write!(f, "folder renamed: {} -> {} {inode}", from.display(), to.display()),
+            Event::FileCreated(path, inode) => write!(f, "file created: {} {inode}", path.display()),
+            Event::FolderCreated(path, inode) => write!(f, "folder created: {} {inode}", path.display()),
         }
     }
 }
@@ -174,7 +174,7 @@ impl AsyncWatcher {
         let read_str_fn = async |stream: &mut ChildStdout,
                                  len_buffer: &mut [u8; 2],
                                  path_buffer: &mut Vec<u8>|
-               -> io::Result<String> {
+               -> io::Result<PathBuf> {
             stream.read_exact(len_buffer.as_mut()).await?;
             let path_len_in_bytes = u16::from_be_bytes(*len_buffer) as usize;
             if path_buffer.len() < path_len_in_bytes {
@@ -184,9 +184,10 @@ impl AsyncWatcher {
             stream
                 .read_exact(&mut path_buffer[..path_len_in_bytes])
                 .await?;
+
             let path_str = String::from_utf8_lossy(&path_buffer[..path_len_in_bytes]).to_string();
 
-            Ok(path_str)
+            Ok(PathBuf::from(path_str))
         };
 
         let event = if matches!(operation_type, OperationType::Removed) {
