@@ -1,4 +1,4 @@
-use std::{path::{Path, PathBuf}, time::Duration};
+use std::{ path::{Path, PathBuf}, time::Duration};
 
 use tokio::{
     io::{self, AsyncReadExt},
@@ -185,8 +185,8 @@ impl AsyncWatcher {
                 .read_exact(&mut path_buffer[..path_len_in_bytes])
                 .await?;
 
+            // TODO: use different conversion method
             let path_str = String::from_utf8_lossy(&path_buffer[..path_len_in_bytes]).to_string();
-
             Ok(PathBuf::from(path_str))
         };
 
