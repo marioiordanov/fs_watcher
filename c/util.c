@@ -11,6 +11,15 @@ bool does_object_exist(const char* path)
     return stat(path, &st) == 0;
 }
 
+bool does_object_with_inode_exist(const char* path, ino_t inode) {
+    struct stat st;
+    if ((stat(path, &st) == 0) && st.st_ino == inode ) {
+        return true;
+    }
+
+    return false;
+}
+
 // returns inode of a path or 0 if it does not exist
 ino_t get_inode(const char* path) {
     struct stat st;
