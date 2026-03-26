@@ -83,10 +83,10 @@ impl TryFrom<u8> for OperationType {
 #[derive(Clone, Debug)]
 pub enum Event {
     FileCreated(PathBuf, u64),
-    FileRemoved(PathBuf),
+    FileRemoved(PathBuf, u64),
     FileAdded(PathBuf, u64),
     FileModified(PathBuf, u64),
-    FolderRemoved(PathBuf),
+    FolderRemoved(PathBuf, u64),
     FolderAdded(PathBuf, u64),
     FolderCreated(PathBuf, u64),
     FileRenamed {
@@ -237,13 +237,7 @@ impl AsyncWatcher {
                 Ok(inode)
             };
 
-        let event = if matches!(operation_type, OperationType::Removed) {
-            let path = read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?;
-            match object_type {
-                ObjectType::File => Event::FileRemoved(path),
-                ObjectType::Folder => Event::FolderRemoved(path),
-            }
-        } else if matches!(operation_type, OperationType::Replaced) {
+        let event = if matches!(operation_type, OperationType::Replaced) {
             let old_inode = read_inode_fn(&mut stdout, inode_buffer).await?;
             let new_inode = read_inode_fn(&mut stdout, inode_buffer).await?;
 
@@ -287,6 +281,8 @@ impl AsyncWatcher {
                 (OperationType::Created, ObjectType::Folder) => {
                     Event::FolderCreated(first_path, inode)
                 }
+                (OperationType::Removed, ObjectType::File) => Event::FileRemoved(first_path, inode),
+                (OperationType::Removed, ObjectType::Folder) => Event::FolderRemoved(first_path, inode),
                 _ => panic!("Impossible case"),
             };
 
