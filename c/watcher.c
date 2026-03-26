@@ -9,55 +9,115 @@
 #include "protocol.h"
 
 const size_t RENAMED_EVENTS_COUNT = 2;
-const size_t FILE_MODIFIED_VIA_TMP_EVENTS_COUNT = 2;
+const size_t REPLACED_EVENTS_COUNT = 2;
+const size_t FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT = 2;
 
 char path[PATH_MAX] = {0};
 char to_path[PATH_MAX] = {0};
 ino_t inode = {0};
 ino_t to_inode = {0};
 
-bool clear_global_variable_and_extract_cstring_from_CFStringRef(CFStringRef cfPath)
+typedef struct
 {
-    memset(path, 0, sizeof(path));
-    return CFStringGetCString(cfPath, path, sizeof(path), kCFStringEncodingUTF8);
-}
-
-bool get_inode_from_CFNumber_and_set_to_global_variable(CFNumberRef cfInode)
-{
-    CFNumberGetValue(cfInode, kCFNumberLongLongType, &inode);
-}
-
-typedef struct {
     char path[PATH_MAX];
     ino_t inode;
     FSEventStreamEventFlags flags;
     FSEventStreamEventId eventId;
-    size_t arrayIndex;
+    size_t dataForIndexInArray;
+    bool initialized;
 } EventData;
+
+bool load_event_data_for_index(CFArrayRef array, CFIndex index, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, EventData *const out)
+{
+    CFDictionaryRef pathInodeDictRef = (CFDictionaryRef)CFArrayGetValueAtIndex(array, index);
+    CFStringRef pathRef = CFDictionaryGetValue(pathInodeDictRef, kFSEventStreamEventExtendedDataPathKey);
+
+    if (pathRef == NULL)
+    {
+        return false;
+    }
+
+    CFNumberRef inodeRef = CFDictionaryGetValue(pathInodeDictRef, kFSEventStreamEventExtendedFileIDKey);
+    if (inodeRef == NULL)
+    {
+        return false;
+    }
+
+    memset(out->path, 0, sizeof(out->path));
+    if (!CFStringGetCString(pathRef, out->path, sizeof(out->path), kCFStringEncodingUTF8))
+    {
+        return false;
+    }
+
+    if (!CFNumberGetValue(inodeRef, kCFNumberLongLongType, &(out->inode)))
+    {
+        return false;
+    }
+
+    out->flags = eventFlags[index];
+    out->eventId = eventIds[index];
+    out->dataForIndexInArray = index;
+
+    return true;
+}
 
 static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlags bit)
 {
     return (flag & bit) != 0;
 }
 
-bool is_file_modified_via_tmp_file(size_t events_count, const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+static void translate_fs_event_flag(FSEventStreamEventFlags f)
 {
-    if (events_count < FILE_MODIFIED_VIA_TMP_EVENTS_COUNT)
+    struct
     {
-        return false;
+        FSEventStreamEventFlags flag;
+        char *translation;
+    } bits[] = {
+        {kFSEventStreamEventFlagItemIsDir, "Folder"},
+        {kFSEventStreamEventFlagItemIsFile, "File"},
+        {kFSEventStreamEventFlagItemXattrMod, "ExtendedAttributesChanged"},
+        {kFSEventStreamEventFlagItemChangeOwner, "OwnerChanged"},
+        {kFSEventStreamEventFlagItemFinderInfoMod, "FinderInfoChanged"},
+        {kFSEventStreamEventFlagItemModified, "ContentsChanged"},
+        {kFSEventStreamEventFlagItemRenamed, "Renamed"},
+        {kFSEventStreamEventFlagItemInodeMetaMod, "MetadataChanged"},
+        {kFSEventStreamEventFlagItemRemoved, "Removed"},
+        {kFSEventStreamEventFlagItemCreated, "Created"}};
+
+    bool found = false;
+    unsigned int current = 0;
+    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++)
+    {
+        if (bits[i].flag & f)
+        {
+            found = true;
+            current |= bits[i].flag;
+            printf("%s ", bits[i].translation);
+        }
     }
 
-    if (strcmp(paths[0], paths[1]) != 0)
+    if (!found)
     {
-        return false;
+        printf("Unrecognized event %d", f);
     }
 
-    if (has_flag(eventFlags[0], kFSEventStreamEventFlagItemRemoved) && has_flag(eventFlags[0], kFSEventStreamEventFlagItemIsFile) && has_flag(eventFlags[1], kFSEventStreamEventFlagItemIsFile) &&
-        has_flag(eventFlags[1], kFSEventStreamEventFlagItemRenamed))
-    {
-        return true;
+    if (current != f) {
+        printf("Not all pieces handled ");
     }
-    return false;
+}
+
+bool is_file_modified_via_tmp_file(const EventData *const current, const EventData *const next)
+{
+    if (current == NULL || next == NULL) return false;
+
+    if (strcmp(current->path, next->path) != 0) return false;
+
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemIsFile)) return false;
+    if (!has_flag(next->flags, kFSEventStreamEventFlagItemIsFile)) return false;
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemRemoved)) return false;
+    if (!has_flag(next->flags, kFSEventStreamEventFlagItemRenamed)) return false;
+
+    return true;
 }
 
 typedef bool (*send_object_fn)(ObjectType object_type, const char *path);
@@ -103,60 +163,56 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
     fts_close(tree);
 }
 
-bool is_object_renamed(FSEventStreamEventFlags object_flag, size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
+bool is_object_renamed(FSEventStreamEventFlags objectTypeFlag, const EventData *const current, const EventData *const next)
 {
-    if (events_count < RENAMED_EVENTS_COUNT)
-    {
+    if (current == NULL || next == NULL)
         return false;
-    }
 
-    // first events id is x, seconds is x+1
-    if (eventIds[0] + 1 != eventIds[1])
-    {
+    // first events id is x, second is x+1
+    if (current->eventId + 1 != next->eventId)
         return false;
-    }
 
-    for (size_t i = 0; i < RENAMED_EVENTS_COUNT; i++)
-    {
-        bool is_it_the_same_object_type = has_flag(eventFlags[i], object_flag);
-        bool is_renamed = has_flag(eventFlags[i], kFSEventStreamEventFlagItemRenamed);
+    if (!has_flag(current->flags, objectTypeFlag))
+        return false;
+    if (!has_flag(next->flags, objectTypeFlag))
+        return false;
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemRenamed))
+        return false;
+    if (!has_flag(next->flags, kFSEventStreamEventFlagItemRenamed))
+        return false;
 
-        if (!(is_it_the_same_object_type && is_renamed))
-        {
-            return false;
-        }
-    }
+    // rename doesn't change the inode
+    if (current->inode != next->inode)
+        return false;
 
     // the second path is the new name
-    if (!does_object_exist(paths[1]))
-    {
+    if (!does_object_with_inode_exist(next->path, next->inode))
         return false;
-    }
 
     return true;
 }
 
-bool is_file_renamed(size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
+bool is_file_renamed(const EventData *const current, const EventData *const next)
 {
-    return is_object_renamed(kFSEventStreamEventFlagItemIsFile, events_count, eventFlags, eventIds, paths);
+    return is_object_renamed(kFSEventStreamEventFlagItemIsFile, current, next);
 }
 
-bool is_folder_renamed(size_t events_count, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
+bool is_folder_renamed(const EventData *const current, const EventData *const next)
 {
-    return is_object_renamed(kFSEventStreamEventFlagItemIsDir, events_count, eventFlags, eventIds, paths);
+    return is_object_renamed(kFSEventStreamEventFlagItemIsDir, current, next);
 }
 
-static bool is_object_removed(FSEventStreamEventFlags object_flag, FSEventStreamEventFlags flag, const char *file_path)
+static bool is_object_removed(FSEventStreamEventFlags object_flag, const EventData *const event)
 {
-    bool is_renamed = has_flag(flag, kFSEventStreamEventFlagItemRenamed);
-    bool is_deleted = has_flag(flag, kFSEventStreamEventFlagItemRemoved);
+    bool is_renamed = has_flag(event->flags, kFSEventStreamEventFlagItemRenamed);
+    bool is_deleted = has_flag(event->flags, kFSEventStreamEventFlagItemRemoved);
 
-    if (!has_flag(flag, object_flag))
+    if (!has_flag(event->flags, object_flag))
     {
         return false;
     }
 
-    if (is_renamed && !does_object_exist(file_path))
+    if (is_renamed && !does_object_exist(event->path))
     {
         return true;
     }
@@ -169,245 +225,205 @@ static bool is_object_removed(FSEventStreamEventFlags object_flag, FSEventStream
     return false;
 }
 
-static bool is_file_removed(FSEventStreamEventFlags flag, const char *file_path)
+static bool is_file_removed(const EventData *const event)
 {
-    return is_object_removed(kFSEventStreamEventFlagItemIsFile, flag, file_path);
+    return is_object_removed(kFSEventStreamEventFlagItemIsFile, event);
 }
 
-static bool is_folder_removed(FSEventStreamEventFlags flag, const char *file_path)
+static bool is_folder_removed(const EventData *const event)
 {
-    return is_object_removed(kFSEventStreamEventFlagItemIsDir, flag, file_path);
+    return is_object_removed(kFSEventStreamEventFlagItemIsDir, event);
 }
 
-static bool is_object_created(FSEventStreamEventFlags object_flag, FSEventStreamEventFlags flag, const char *file_path)
+static bool is_object_created(FSEventStreamEventFlags object_flag, const EventData *const event)
 {
-    if (!has_flag(flag, object_flag))
-    {
+    if (!has_flag(event->flags, object_flag))
         return false;
-    }
-
-    if (has_flag(flag, kFSEventStreamEventFlagItemCreated) && does_object_exist(file_path))
-    {
-        return true;
-    }
-
-    return false;
-}
-
-static bool is_file_created(FSEventStreamEventFlags flag, const char *file_path)
-{
-    return is_object_created(kFSEventStreamEventFlagItemIsFile, flag, file_path);
-}
-
-static bool is_folder_created(FSEventStreamEventFlags flag, const char *file_path)
-{
-    return is_object_created(kFSEventStreamEventFlagItemIsDir, flag, file_path);
-}
-
-static bool is_object_added(FSEventStreamEventFlags object_flag, FSEventStreamEventFlags flag, const char *file_path)
-{
-    if (!has_flag(flag, object_flag))
-    {
+    if (!has_flag(event->flags, kFSEventStreamEventFlagItemCreated))
         return false;
-    }
+    if (!does_object_exist(event->path))
+        return false;
 
-    if (!has_flag(flag, kFSEventStreamEventFlagItemModified) && has_flag(flag, kFSEventStreamEventFlagItemRenamed) && does_object_exist(file_path))
-    {
-        return true;
-    }
-
-    return false;
+    return true;
 }
 
-static bool is_file_added(FSEventStreamEventFlags flag, const char *file_path)
+static bool is_file_created(const EventData *const event)
 {
-    return is_object_added(kFSEventStreamEventFlagItemIsFile, flag, file_path);
+    return is_object_created(kFSEventStreamEventFlagItemIsFile, event);
 }
 
-static bool is_folder_added(FSEventStreamEventFlags flag, const char *file_path)
+static bool is_folder_created(const EventData *const event)
 {
-    return is_object_added(kFSEventStreamEventFlagItemIsDir, flag, file_path);
+    return is_object_created(kFSEventStreamEventFlagItemIsDir, event);
 }
 
-static bool is_file_modified(FSEventStreamEventFlags flag, const char *file_path)
+static bool is_object_added(FSEventStreamEventFlags objectFlag, const EventData *const event)
 {
-    if (has_flag(flag, kFSEventStreamEventFlagItemIsFile) && has_flag(flag, kFSEventStreamEventFlagItemModified) && does_object_exist(file_path))
-    {
-        return true;
-    }
+    if (event == NULL)
+        return false;
+    if (!has_flag(event->flags, objectFlag))
+        return false;
 
-    return false;
+    if (!has_flag(event->flags, kFSEventStreamEventFlagItemRenamed)) return false;
+    if (has_flag(event->flags, kFSEventStreamEventFlagItemModified)) return false;
+    if (!does_object_exist(event->path)) return false;
+
+    return true;
 }
 
-static size_t handle_renamed_object(size_t numEvents, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const char *const *paths)
+static bool is_file_added(const EventData *const event)
+{
+    return is_object_added(kFSEventStreamEventFlagItemIsFile, event);
+}
+
+static bool is_folder_added(const EventData *const event)
+{
+    return is_object_added(kFSEventStreamEventFlagItemIsDir, event);
+}
+
+static bool is_file_modified(const EventData *const current)
+{
+    if (current == NULL) return false;
+
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemIsFile)) return false;
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemModified)) return false;
+
+    return true;
+}
+
+static size_t handle_renamed_object(const EventData *const current, const EventData *const next)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_renamed(numEvents, eventFlags, eventIds, paths))
+    if (is_file_renamed(current, next))
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
-        send_object_renamed(OBJECT_FILE, paths[0], paths[1]);
+        send_object_renamed(OBJECT_FILE, current->path, next->path);
     }
-    else if (is_folder_renamed(numEvents, eventFlags, eventIds, paths))
+    else if (is_folder_renamed(current, next))
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
-        send_object_renamed(OBJECT_FOLDER, paths[0], paths[1]);
+        send_object_renamed(OBJECT_FOLDER, current->path, next->path);
     }
 
     return consumedEvents;
 }
 
-static size_t handle_removed_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+static size_t handle_removed_object(const EventData *const event)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_removed(eventFlags[0], paths[0]))
+    if (is_file_removed(event))
     {
         consumedEvents = 1;
-        send_object_removed(OBJECT_FILE, paths[0]);
+        send_object_removed(OBJECT_FILE, event->path);
     }
-    else if (is_folder_removed(eventFlags[0], paths[0]))
+    else if (is_folder_removed(event))
     {
         consumedEvents = 1;
-        send_object_removed(OBJECT_FOLDER, paths[0]);
+        send_object_removed(OBJECT_FOLDER, event->path);
     }
 
     return consumedEvents;
 }
 
-static size_t handle_created_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+static size_t handle_created_object(const EventData *const event)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_created(eventFlags[0], paths[0]))
+    if (is_file_created(event))
     {
         consumedEvents = 1;
-        send_object_created(OBJECT_FILE, paths[0]);
+        send_object_created(OBJECT_FILE, event->path);
     }
-    else if (is_folder_created(eventFlags[0], paths[0]))
+    else if (is_folder_created(event))
     {
         consumedEvents = 1;
-        send_object_created(OBJECT_FOLDER, paths[0]);
-        send_folder_contents_recursive(paths[0], send_object_created);
+        send_object_created(OBJECT_FOLDER, event->path);
+        send_folder_contents_recursive(event->path, send_object_created);
     }
 
     return consumedEvents;
 }
 
-static size_t handle_added_object(const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+static size_t handle_added_object(const EventData *const event)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_added(eventFlags[0], paths[0]))
+    if (is_file_added(event))
     {
         consumedEvents = 1;
-        send_object_added(OBJECT_FILE, paths[0]);
+        send_object_added(OBJECT_FILE, event->path);
     }
-    else if (is_folder_added(eventFlags[0], paths[0]))
+    else if (is_folder_added(event))
     {
         consumedEvents = 1;
-        send_object_added(OBJECT_FOLDER, paths[0]);
-        send_folder_contents_recursive(paths[0], send_object_added);
+        send_object_added(OBJECT_FOLDER, event->path);
+        send_folder_contents_recursive(event->path, send_object_added);
     }
 
     return consumedEvents;
 }
 
-static size_t handle_modified_file(size_t numEvents, const FSEventStreamEventFlags *eventFlags, const char *const *paths)
+static size_t handle_modified_file(const EventData *const current, const EventData *const next)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_modified_via_tmp_file(numEvents, eventFlags, paths))
+    if (is_file_modified_via_tmp_file(current, next))
     {
-        consumedEvents = FILE_MODIFIED_VIA_TMP_EVENTS_COUNT;
-        send_object_modified(OBJECT_FILE, paths[0]);
+        consumedEvents = FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT;
+        send_object_modified(OBJECT_FILE, current->path);
     }
-    else if (is_file_modified(eventFlags[0], paths[0]))
+    else if (is_file_modified(current))
     {
         consumedEvents = 1;
-        send_object_modified(OBJECT_FILE, paths[0]);
+        send_object_modified(OBJECT_FILE, current->path);
     }
 
     return consumedEvents;
 }
 
 // replace events have the same path, different inodes and file renamed event flags
-static bool is_object_replaced(FSEventStreamEventFlags objectTypeFlag, CFIndex numEvents, CFIndex currentIndex, const FSEventStreamEventFlags *eventFlags, CFArrayRef paths)
+static bool is_object_replaced(FSEventStreamCreateFlags objectTypeFlag, const EventData *const current, const EventData *const next)
 {
-    if ((numEvents - currentIndex) < 2)
-    {
+    if (current == NULL || next == NULL)
         return false;
-    }
 
-    if (!(has_flag(eventFlags[currentIndex], objectTypeFlag) && has_flag(eventFlags[currentIndex + 1], objectTypeFlag)))
-    {
+    const char *path = next->path;
+
+    if (!has_flag(current->flags, objectTypeFlag))
         return false;
-    }
-
-    CFDictionaryRef firstEntry = (CFDictionaryRef)CFArrayGetValueAtIndex(paths, currentIndex);
-    CFStringRef firstPathRef = CFDictionaryGetValue(firstEntry, kFSEventStreamEventExtendedDataPathKey);
-
-    if (firstPathRef == NULL)
-    {
+    if (!has_flag(next->flags, objectTypeFlag))
         return false;
-    }
 
-    CFDictionaryRef secondEntry = (CFDictionaryRef)CFArrayGetValueAtIndex(paths, currentIndex + 1);
-    CFStringRef secondPathRef = CFDictionaryGetValue(secondEntry, kFSEventStreamEventExtendedDataPathKey);
-
-    if (secondPathRef == NULL)
-    {
+    // both events are renamed
+    if (!has_flag(current->flags, kFSEventStreamEventFlagItemRenamed))
         return false;
-    }
-
-    if (CFStringCompare(firstPathRef, secondPathRef, kCFCompareCaseInsensitive) != kCFCompareEqualTo)
-    {
+    if (!has_flag(next->flags, kFSEventStreamEventFlagItemRenamed))
         return false;
-    }
 
-    CFNumberRef firstInodeRef = CFDictionaryGetValue(firstEntry, kFSEventStreamEventExtendedFileIDKey);
-    if (firstInodeRef == NULL)
-    {
+    // (path + oldInode) does not exist, (path + newInode) exist
+    if (does_object_with_inode_exist(path, current->inode))
         return false;
-    }
-
-    CFNumberRef secondInodeRef = CFDictionaryGetValue(secondEntry, kFSEventStreamEventExtendedFileIDKey);
-    if (secondInodeRef == NULL)
-    {
+    if (!does_object_with_inode_exist(path, next->inode))
         return false;
-    }
 
-    if (CFNumberCompare(firstInodeRef, secondInodeRef, NULL) == kCFCompareEqualTo)
-    {
-        return false;
-    }
-
-    if (!clear_global_variable_and_extract_cstring_from_CFStringRef(secondPathRef))
-    {
-        return false;
-    }
-
-    ino_t oldInode = get_inode_from_CFNumber(firstInodeRef);
-    ino_t newInode = get_inode_from_CFNumber(secondInodeRef);
-
-    // (path + oldInode) does not exist, (path + newInode) exist, both events are renamed
-    return !does_object_with_inode_exist(path, oldInode) &&
-           does_object_with_inode_exist(path, newInode) &&
-           has_flag(eventFlags[currentIndex], kFSEventStreamEventFlagItemRenamed) &&
-           has_flag(eventFlags[currentIndex + 1], kFSEventStreamEventFlagItemRenamed);
+    return true;
 }
 
-static size_t handle_object_replaced(CFIndex numEvents, CFIndex currentIndex, const FSEventStreamEventFlags *eventFlags, CFArrayRef paths)
+static size_t handle_replaced_object(const EventData *const current, const EventData *const next)
 {
     size_t consumedEvents = 0;
 
-    if (is_object_replaced(kFSEventStreamEventFlagItemIsFile, numEvents, currentIndex, eventFlags, paths))
+    if (is_object_replaced(kFSEventStreamEventFlagItemIsFile, current, next))
     {
-        send_object_replaced(OBJECT_FILE, path, )
+        consumedEvents = REPLACED_EVENTS_COUNT;
+        send_object_replaced(OBJECT_FILE, next->path, current->inode, next->inode);
     }
-    else if (is_object_replaced(kFSEventStreamEventFlagItemIsDir, numEvents, currentIndex, eventFlags, paths))
+    else if (is_object_replaced(kFSEventStreamEventFlagItemIsDir, current, next))
     {
-        // send folder replaced and recursively send object_added for contents
+        consumedEvents = REPLACED_EVENTS_COUNT;
+        send_object_replaced(OBJECT_FOLDER, next->path, current->inode, next->inode);
     }
 
     return consumedEvents;
@@ -418,86 +434,86 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
     (void)streamRef;
     (void)clientCallBackInfo;
     CFArrayRef paths = (CFArrayRef)eventPaths;
-
-    for (size_t i = 0; i < numEvents;)
-    {
-        CFDictionaryRef path_inode_ref = (CFDictionaryRef)CFArrayGetValueAtIndex(paths, (CFIndex)i);
-
-        if (path_inode_ref == NULL)
-        {
-            i++;
-            continue;
-        }
-
-        CFStringRef pathRef = CFDictionaryGetValue(path_inode_ref, kFSEventStreamEventExtendedDataPathKey);
-
-        if (pathRef == NULL)
-        {
-            continue;
-        }
-
-        CFNumberRef inodeRef = CFDictionaryGetValue(path_inode_ref, kFSEventStreamEventExtendedFileIDKey);
-        if (inodeRef == NULL)
-        {
-            continue;
-        }
-
-        ino_t inode = 0;
-
-        if (CFNumberGetValue(inodeRef, kCFNumberLongLongType, &inode))
-        {
-            printf("inode = %llu", inode);
-        }
-
-        char path[PATH_MAX];
-        if (CFStringGetCString(pathRef, path, sizeof(path), kCFStringEncodingUTF8))
-        {
-            printf("path=%s\n", path);
-        }
-    }
-}
-
-static void stream_callback(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, size_t numEvents, void *eventPaths, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds)
-{
-    (void)streamRef;
-    (void)clientCallBackInfo;
-    const char *const *paths = (const char *const *)eventPaths;
+    EventData one = {0};
+    EventData another = {0};
+    EventData *current = NULL;
+    EventData *next = NULL;
 
     for (size_t i = 0; i < numEvents;)
     {
         size_t consumedEvents = 0;
+        bool canLoadNext = (numEvents - (i + 1)) > 0;
+        load_event_data_for_index(paths, i, eventFlags, eventIds, &one);
+        printf("%s ", one.path);
+        translate_fs_event_flag(one.flags);
+        printf("\n");
+        consumedEvents = 1;
 
-        // skip processing if it is DS_Store
-        if (is_DS_Store_path(paths[i]))
-        {
-            consumedEvents = 1;
-        }
 
-        if (consumedEvents == 0)
-        { // handle renamed file/folder
-            consumedEvents = handle_renamed_object(numEvents - i, &eventFlags[i], &eventIds[i], &paths[i]);
-        }
-        if (consumedEvents == 0)
-        { // handle modified file
-            consumedEvents = handle_modified_file(numEvents - i, &eventFlags[i], &paths[i]);
-        }
-        if (consumedEvents == 0)
-        { // handle removed file/folder
-            consumedEvents = handle_removed_object(&eventFlags[i], &paths[i]);
-        }
-        if (consumedEvents == 0)
-        { // handle created file/folder
-            consumedEvents = handle_created_object(&eventFlags[i], &paths[i]);
-        }
-        if (consumedEvents == 0)
-        { // handle added file/folder
-            consumedEvents = handle_added_object(&eventFlags[i], &paths[i]);
-        }
 
-        if (consumedEvents == 0)
-        {
-            consumedEvents = 1;
-        }
+        // // check if current points to something, if not then do initial loading
+        // if (current == NULL)
+        // {
+        //     current = &one;
+        //     load_event_data_for_index(paths, i, eventFlags, eventIds, current);
+        // }
+        // // if next is loaded, check if its index is the current index, if yes
+        // if (next != NULL && next->dataForIndexInArray == i)
+        // {
+        //     current = next;
+        //     next = NULL;
+        // }
+        // if (current->dataForIndexInArray != i)
+        // {
+        //     load_event_data_for_index(paths, i, eventFlags, eventIds, current);
+        // }
+        // if (next == NULL && canLoadNext)
+        // {
+        //     if (current == &one)
+        //     {
+        //         next = &another;
+        //     }
+        //     else
+        //     {
+        //         next = &one;
+        //     }
+
+        //     load_event_data_for_index(paths, i + 1, eventFlags, eventIds, next);
+        // }
+
+        // if (is_DS_Store_path(current->path))
+        // {
+        //     consumedEvents = 1;
+        // }
+
+        // if (consumedEvents == 0)
+        // { // handle renamed file/folder
+        //     consumedEvents = handle_renamed_object(current, next);
+        // }
+        // if (consumedEvents == 0) {
+        //     consumedEvents = handle_replaced_object(current, next);
+        // }
+        // if (consumedEvents == 0)
+        // { // handle modified file
+        //     consumedEvents = handle_modified_file(current, next);
+        // }
+        // if (consumedEvents == 0)
+        // { // handle removed file/folder
+        //     consumedEvents = handle_removed_object(current);
+        // }
+        // if (consumedEvents == 0)
+        // { // handle created file/folder
+        //     consumedEvents = handle_created_object(current);
+        // }
+        // if (consumedEvents == 0)
+        // { // handle added file/folder
+        //     consumedEvents = handle_added_object(current);
+        // }
+
+        // if (consumedEvents == 0)
+        // {
+        //     consumedEvents = 1;
+        // }
 
         i += consumedEvents;
     }
