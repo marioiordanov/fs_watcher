@@ -66,46 +66,6 @@ static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlag
     return (flag & bit) != 0;
 }
 
-static void translate_fs_event_flag(FSEventStreamEventFlags f)
-{
-    struct
-    {
-        FSEventStreamEventFlags flag;
-        char *translation;
-    } bits[] = {
-        {kFSEventStreamEventFlagItemIsDir, "Folder"},
-        {kFSEventStreamEventFlagItemIsFile, "File"},
-        {kFSEventStreamEventFlagItemXattrMod, "ExtendedAttributesChanged"},
-        {kFSEventStreamEventFlagItemChangeOwner, "OwnerChanged"},
-        {kFSEventStreamEventFlagItemFinderInfoMod, "FinderInfoChanged"},
-        {kFSEventStreamEventFlagItemModified, "ContentsChanged"},
-        {kFSEventStreamEventFlagItemRenamed, "Renamed"},
-        {kFSEventStreamEventFlagItemInodeMetaMod, "MetadataChanged"},
-        {kFSEventStreamEventFlagItemRemoved, "Removed"},
-        {kFSEventStreamEventFlagItemCreated, "Created"}};
-
-    bool found = false;
-    unsigned int current = 0;
-    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++)
-    {
-        if (bits[i].flag & f)
-        {
-            found = true;
-            current |= bits[i].flag;
-            printf("%s ", bits[i].translation);
-        }
-    }
-
-    if (!found)
-    {
-        printf("Unrecognized event %d", f);
-    }
-
-    if (current != f) {
-        printf("Not all pieces handled ");
-    }
-}
-
 bool is_file_modified_via_tmp_file(const EventData *const current, const EventData *const next)
 {
     if (current == NULL || next == NULL) return false;
@@ -416,15 +376,17 @@ static size_t handle_replaced_object(const EventData *const current, const Event
 {
     size_t consumedEvents = 0;
 
+    const char* path = next->path;
     if (is_object_replaced(kFSEventStreamEventFlagItemIsFile, current, next))
     {
         consumedEvents = REPLACED_EVENTS_COUNT;
-        send_object_replaced(OBJECT_FILE, next->path, current->inode, next->inode);
+        send_object_replaced(OBJECT_FILE, path, current->inode, next->inode);
     }
     else if (is_object_replaced(kFSEventStreamEventFlagItemIsDir, current, next))
     {
         consumedEvents = REPLACED_EVENTS_COUNT;
-        send_object_replaced(OBJECT_FOLDER, next->path, current->inode, next->inode);
+        send_object_replaced(OBJECT_FOLDER, path, current->inode, next->inode);
+        send_folder_contents_recursive(path, send_object_added);
     }
 
     return consumedEvents;
@@ -444,77 +406,70 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
     {
         size_t consumedEvents = 0;
         bool canLoadNext = (numEvents - (i + 1)) > 0;
-        load_event_data_for_index(paths, i, eventFlags, eventIds, &one);
-        printf("%s ", one.path);
-        translate_fs_event_flag(one.flags);
-        printf("\n");
-        consumedEvents = 1;
 
+        // check if current points to something, if not then do initial loading
+        if (current == NULL)
+        {
+            current = &one;
+            load_event_data_for_index(paths, i, eventFlags, eventIds, current);
+        }
+        // if next is loaded, check if its index is the current index, if yes
+        if (next != NULL && next->dataForIndexInArray == i)
+        {
+            current = next;
+            next = NULL;
+        }
+        if (current->dataForIndexInArray != i)
+        {
+            load_event_data_for_index(paths, i, eventFlags, eventIds, current);
+        }
+        if (next == NULL && canLoadNext)
+        {
+            if (current == &one)
+            {
+                next = &another;
+            }
+            else
+            {
+                next = &one;
+            }
 
+            load_event_data_for_index(paths, i + 1, eventFlags, eventIds, next);
+        }
 
-        // // check if current points to something, if not then do initial loading
-        // if (current == NULL)
-        // {
-        //     current = &one;
-        //     load_event_data_for_index(paths, i, eventFlags, eventIds, current);
-        // }
-        // // if next is loaded, check if its index is the current index, if yes
-        // if (next != NULL && next->dataForIndexInArray == i)
-        // {
-        //     current = next;
-        //     next = NULL;
-        // }
-        // if (current->dataForIndexInArray != i)
-        // {
-        //     load_event_data_for_index(paths, i, eventFlags, eventIds, current);
-        // }
-        // if (next == NULL && canLoadNext)
-        // {
-        //     if (current == &one)
-        //     {
-        //         next = &another;
-        //     }
-        //     else
-        //     {
-        //         next = &one;
-        //     }
+        if (is_DS_Store_path(current->path))
+        {
+            consumedEvents = 1;
+        }
 
-        //     load_event_data_for_index(paths, i + 1, eventFlags, eventIds, next);
-        // }
+        if (consumedEvents == 0)
+        { // handle renamed file/folder
+            consumedEvents = handle_renamed_object(current, next);
+        }
+        if (consumedEvents == 0) {
+            consumedEvents = handle_replaced_object(current, next);
+        }
+        if (consumedEvents == 0)
+        { // handle modified file
+            consumedEvents = handle_modified_file(current, next);
+        }
+        if (consumedEvents == 0)
+        { // handle removed file/folder
+            consumedEvents = handle_removed_object(current);
+        }
+        if (consumedEvents == 0)
+        { // handle created file/folder
+            consumedEvents = handle_created_object(current);
+        }
+        if (consumedEvents == 0)
+        { // handle added file/folder
+            consumedEvents = handle_added_object(current);
+        }
 
-        // if (is_DS_Store_path(current->path))
-        // {
-        //     consumedEvents = 1;
-        // }
-
-        // if (consumedEvents == 0)
-        // { // handle renamed file/folder
-        //     consumedEvents = handle_renamed_object(current, next);
-        // }
-        // if (consumedEvents == 0) {
-        //     consumedEvents = handle_replaced_object(current, next);
-        // }
-        // if (consumedEvents == 0)
-        // { // handle modified file
-        //     consumedEvents = handle_modified_file(current, next);
-        // }
-        // if (consumedEvents == 0)
-        // { // handle removed file/folder
-        //     consumedEvents = handle_removed_object(current);
-        // }
-        // if (consumedEvents == 0)
-        // { // handle created file/folder
-        //     consumedEvents = handle_created_object(current);
-        // }
-        // if (consumedEvents == 0)
-        // { // handle added file/folder
-        //     consumedEvents = handle_added_object(current);
-        // }
-
-        // if (consumedEvents == 0)
-        // {
-        //     consumedEvents = 1;
-        // }
+        if (consumedEvents == 0)
+        {
+            consumedEvents = 1;
+        }
 
         i += consumedEvents;
     }
