@@ -287,6 +287,7 @@ static bool is_file_modified(const EventData *const current)
 
     if (!has_flag(current->flags, kFSEventStreamEventFlagItemIsFile)) return false;
     if (!has_flag(current->flags, kFSEventStreamEventFlagItemModified)) return false;
+    if (!does_object_exist(current->path)) return false;
 
     return true;
 }
