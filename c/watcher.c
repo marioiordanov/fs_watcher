@@ -80,7 +80,7 @@ bool is_file_modified_via_tmp_file(const EventData *const current, const EventDa
     return true;
 }
 
-typedef bool (*send_object_fn)(ObjectType object_type, const char *path);
+typedef bool (*send_object_fn)(ObjectType object_type, const char *path, ino_t inode);
 
 static void send_folder_contents_recursive(const char *folder_path, send_object_fn sender)
 {
@@ -112,11 +112,12 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
 
         if (node->fts_info == FTS_F)
         {
-            sender(OBJECT_FILE, node->fts_path);
+
+            sender(OBJECT_FILE, node->fts_path, node->fts_ino);
         }
         else if (node->fts_info == FTS_D)
         {
-            sender(OBJECT_FOLDER, node->fts_path);
+            sender(OBJECT_FOLDER, node->fts_path, node->fts_ino);
         }
     }
 
@@ -259,12 +260,12 @@ static size_t handle_renamed_object(const EventData *const current, const EventD
     if (is_file_renamed(current, next))
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
-        send_object_renamed(OBJECT_FILE, current->path, next->path);
+        send_object_renamed(OBJECT_FILE, current->path, next->path, current->inode);
     }
     else if (is_folder_renamed(current, next))
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
-        send_object_renamed(OBJECT_FOLDER, current->path, next->path);
+        send_object_renamed(OBJECT_FOLDER, current->path, next->path, current->inode);
     }
 
     return consumedEvents;
@@ -277,12 +278,12 @@ static size_t handle_removed_object(const EventData *const event)
     if (is_file_removed(event))
     {
         consumedEvents = 1;
-        send_object_removed(OBJECT_FILE, event->path);
+        send_object_removed(OBJECT_FILE, event->path, event->inode);
     }
     else if (is_folder_removed(event))
     {
         consumedEvents = 1;
-        send_object_removed(OBJECT_FOLDER, event->path);
+        send_object_removed(OBJECT_FOLDER, event->path, event->inode);
     }
 
     return consumedEvents;
@@ -295,12 +296,12 @@ static size_t handle_created_object(const EventData *const event)
     if (is_file_created(event))
     {
         consumedEvents = 1;
-        send_object_created(OBJECT_FILE, event->path);
+        send_object_created(OBJECT_FILE, event->path, event->inode);
     }
     else if (is_folder_created(event))
     {
         consumedEvents = 1;
-        send_object_created(OBJECT_FOLDER, event->path);
+        send_object_created(OBJECT_FOLDER, event->path, event->inode);
         send_folder_contents_recursive(event->path, send_object_created);
     }
 
@@ -314,12 +315,12 @@ static size_t handle_added_object(const EventData *const event)
     if (is_file_added(event))
     {
         consumedEvents = 1;
-        send_object_added(OBJECT_FILE, event->path);
+        send_object_added(OBJECT_FILE, event->path, event->inode);
     }
     else if (is_folder_added(event))
     {
         consumedEvents = 1;
-        send_object_added(OBJECT_FOLDER, event->path);
+        send_object_added(OBJECT_FOLDER, event->path, event->inode);
         send_folder_contents_recursive(event->path, send_object_added);
     }
 
@@ -333,12 +334,12 @@ static size_t handle_modified_file(const EventData *const current, const EventDa
     if (is_file_modified_via_tmp_file(current, next))
     {
         consumedEvents = FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT;
-        send_object_modified(OBJECT_FILE, current->path);
+        send_object_modified(OBJECT_FILE, next->path, next->inode);
     }
     else if (is_file_modified(current))
     {
         consumedEvents = 1;
-        send_object_modified(OBJECT_FILE, current->path);
+        send_object_modified(OBJECT_FILE, current->path, current->inode);
     }
 
     return consumedEvents;

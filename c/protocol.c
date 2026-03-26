@@ -65,43 +65,33 @@ static bool write_length_prefix_string(int fd, const char *str)
     return write_u16_be(fd, (uint16_t)len) && write_all(fd, (const uint8_t *)str, len);
 }
 
-static bool send_one_path(OpCode op, ObjectType ty, const char *path)
-{
-    return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_length_prefix_string(STDOUT_FILENO, path);
-}
-
 static bool send_one_path_with_inode(OpCode op, ObjectType ty, const char *path, ino_t inode)
 {
     return write_u8(STDOUT_FILENO, (uint8_t)op) && write_u8(STDOUT_FILENO, (uint8_t)ty) && write_u64_be(STDOUT_FILENO, inode) && write_length_prefix_string(STDOUT_FILENO, path);
 }
 
-bool send_object_added(ObjectType objectType, const char *path)
+bool send_object_added(ObjectType objectType, const char *path, ino_t inode)
 {
-    ino_t inode = get_inode(path);
     return send_one_path_with_inode(OP_ADDED, objectType, path, inode);
 }
 
-bool send_object_modified(ObjectType objectType, const char *path)
+bool send_object_modified(ObjectType objectType, const char *path, ino_t inode)
 {
-    ino_t inode = get_inode(path);
     return send_one_path_with_inode(OP_MODIFIED, objectType, path, inode);
 }
 
-bool send_object_created(ObjectType objectType, const char *path)
+bool send_object_created(ObjectType objectType, const char *path, ino_t inode)
 {
-    ino_t inode = get_inode(path);
     return send_one_path_with_inode(OP_CREATED, objectType, path, inode);
 }
 
-bool send_object_removed(ObjectType objectType, const char *path)
+bool send_object_removed(ObjectType objectType, const char *path, ino_t inode)
 {
-    return send_one_path(OP_REMOVED, objectType, path);
+    return send_one_path_with_inode(OP_REMOVED, objectType, path, inode);
 }
 
-bool send_object_renamed(ObjectType objectType, const char *fromPath, const char *toPath)
+bool send_object_renamed(ObjectType objectType, const char *fromPath, const char *toPath, ino_t inode)
 {
-    ino_t inode = get_inode(toPath);
-
     return write_u8(STDOUT_FILENO, (uint8_t)OP_RENAMED) &&
            write_u8(STDOUT_FILENO, (uint8_t)objectType) &&
            write_u64_be(STDOUT_FILENO, inode) &&
