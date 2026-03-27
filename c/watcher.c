@@ -334,12 +334,12 @@ static size_t handle_modified_file(const EventData *const current, const EventDa
     if (is_file_modified_via_tmp_file(current, next))
     {
         consumedEvents = FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT;
-        send_object_modified(OBJECT_FILE, next->path, next->inode);
+        send_object_modified(OBJECT_FILE, next->path, current->inode, next->inode);
     }
     else if (is_file_modified(current))
     {
         consumedEvents = 1;
-        send_object_modified(OBJECT_FILE, current->path, current->inode);
+        send_object_modified(OBJECT_FILE, current->path, current->inode, current->inode);
     }
 
     return consumedEvents;
@@ -351,6 +351,8 @@ static bool is_object_replaced(FSEventStreamCreateFlags objectTypeFlag, const Ev
     if (current == NULL || next == NULL)
         return false;
 
+    if (strcmp(current->path, next->path) != 0) return false;
+
     const char *path = next->path;
 
     if (!has_flag(current->flags, objectTypeFlag))
@@ -358,10 +360,12 @@ static bool is_object_replaced(FSEventStreamCreateFlags objectTypeFlag, const Ev
     if (!has_flag(next->flags, objectTypeFlag))
         return false;
 
-    // both events are renamed
+    // both events are renamed only
     if (!has_flag(current->flags, kFSEventStreamEventFlagItemRenamed))
         return false;
     if (!has_flag(next->flags, kFSEventStreamEventFlagItemRenamed))
+        return false;
+    if (has_flag(current->flags, kFSEventStreamEventFlagItemRemoved))
         return false;
 
     // (path + oldInode) does not exist, (path + newInode) exist

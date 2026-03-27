@@ -75,9 +75,12 @@ bool send_object_added(ObjectType objectType, const char *path, ino_t inode)
     return send_one_path_with_inode(OP_ADDED, objectType, path, inode);
 }
 
-bool send_object_modified(ObjectType objectType, const char *path, ino_t inode)
+bool send_object_modified(ObjectType objectType, const char *path, ino_t oldInode, ino_t newInode)
 {
-    return send_one_path_with_inode(OP_MODIFIED, objectType, path, inode);
+    return write_u8(STDOUT_FILENO, (uint8_t)OP_MODIFIED) && write_u8(STDOUT_FILENO, (uint8_t)objectType) &&
+           write_u64_be(STDOUT_FILENO, oldInode) &&
+           write_u64_be(STDOUT_FILENO, newInode) &&
+           write_length_prefix_string(STDOUT_FILENO, path);
 }
 
 bool send_object_created(ObjectType objectType, const char *path, ino_t inode)

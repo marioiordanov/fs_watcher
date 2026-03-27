@@ -22,7 +22,7 @@ typedef enum {
 } OpCode;
 
 bool send_object_added(ObjectType objectType, const char* path, ino_t inode);
-bool send_object_modified(ObjectType objectType, const char* path, ino_t inode);
+bool send_object_modified(ObjectType objectType, const char* path, ino_t oldInode, ino_t newInode);
 bool send_object_created(ObjectType objectType, const char* path, ino_t inode);
 bool send_object_removed(ObjectType objectType, const char* path, ino_t inode);
 bool send_object_renamed(ObjectType objectType, const char* fromPath, const char* toPath, ino_t inode);
