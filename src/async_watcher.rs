@@ -85,7 +85,7 @@ pub enum Event {
     FileCreated(PathBuf, u64),
     FileRemoved(PathBuf, u64),
     FileAdded(PathBuf, u64),
-    FileModified(PathBuf, u64),
+    FileModified(PathBuf, u64, u64),
     FolderRemoved(PathBuf, u64),
     FolderAdded(PathBuf, u64),
     FolderCreated(PathBuf, u64),
@@ -120,8 +120,16 @@ impl std::fmt::Display for Event {
                 write!(f, "folder added: {} {inode}", path.display())
             }
             Event::FileAdded(path, inode) => write!(f, "file added: {} {inode}", path.display()),
-            Event::FileModified(path, inode) => {
-                write!(f, "file modified: {} {inode}", path.display())
+            Event::FileModified(path, old_inode, new_inode) => {
+                if old_inode == new_inode {
+                    write!(f, "file modified: {} {old_inode}", path.display())
+                } else {
+                    write!(
+                        f,
+                        "file modified: {} and inode changed {old_inode}->{new_inode}",
+                        path.display()
+                    )
+                }
             }
             Event::FileRenamed { from, to, inode } => write!(
                 f,
@@ -255,6 +263,12 @@ impl AsyncWatcher {
                     to: new_inode,
                 },
             }
+        } else if matches!(operation_type, OperationType::Modified) {
+            let old_inode = read_inode_fn(&mut stdout, inode_buffer).await?;
+            let new_inode = read_inode_fn(&mut stdout, inode_buffer).await?;
+
+            let path = read_str_fn(&mut stdout, &mut path_length_buffer, &mut path_buffer).await?;
+            Event::FileModified(path, old_inode, new_inode)
         } else {
             let inode = read_inode_fn(&mut stdout, inode_buffer).await?;
 
@@ -274,15 +288,14 @@ impl AsyncWatcher {
                 },
                 (OperationType::Added, ObjectType::File) => Event::FileAdded(first_path, inode),
                 (OperationType::Added, ObjectType::Folder) => Event::FolderAdded(first_path, inode),
-                (OperationType::Modified, ObjectType::File) => {
-                    Event::FileModified(first_path, inode)
-                }
                 (OperationType::Created, ObjectType::File) => Event::FileCreated(first_path, inode),
                 (OperationType::Created, ObjectType::Folder) => {
                     Event::FolderCreated(first_path, inode)
                 }
                 (OperationType::Removed, ObjectType::File) => Event::FileRemoved(first_path, inode),
-                (OperationType::Removed, ObjectType::Folder) => Event::FolderRemoved(first_path, inode),
+                (OperationType::Removed, ObjectType::Folder) => {
+                    Event::FolderRemoved(first_path, inode)
+                }
                 _ => panic!("Impossible case"),
             };
 
