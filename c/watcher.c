@@ -12,14 +12,9 @@ const size_t RENAMED_EVENTS_COUNT = 2;
 const size_t REPLACED_EVENTS_COUNT = 2;
 const size_t FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT = 2;
 
-char path[PATH_MAX] = {0};
-char to_path[PATH_MAX] = {0};
-ino_t inode = {0};
-ino_t to_inode = {0};
-
 typedef struct
 {
-    char path[PATH_MAX];
+    char path[PATH_MAX+1];
     ino_t inode;
     FSEventStreamEventFlags flags;
     FSEventStreamEventId eventId;
@@ -112,12 +107,45 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
 
         if (node->fts_info == FTS_F)
         {
-
-            sender(OBJECT_FILE, node->fts_path, node->fts_ino);
+            sender(OBJECT_FILE, node->fts_path, node->fts_statp->st_ino);
         }
         else if (node->fts_info == FTS_D)
         {
-            sender(OBJECT_FOLDER, node->fts_path, node->fts_ino);
+            sender(OBJECT_FOLDER, node->fts_path, node->fts_statp->st_ino);
+        }
+    }
+
+    fts_close(tree);
+}
+
+static void send_folder_contents_renamed(const char* oldFolderPath, const char* currentFolderPath) {
+    if (!oldFolderPath || !currentFolderPath) return;
+
+    char* paths[] = {(char*)currentFolderPath, NULL};
+
+    FTS* tree = fts_open(paths, FTS_NOCHDIR | FTS_PHYSICAL, NULL);
+    if (tree == NULL)
+    {
+        fprintf(stderr, "failed to open folder tree: %s\n", currentFolderPath);
+        return;
+    }
+
+    char oldPath[PATH_MAX+1] = {0};
+
+    FTSENT* node = NULL;
+    while ( (node = fts_read(tree)) != NULL ) {
+        if (node->fts_level == 0) continue;
+        if (is_DS_Store_path(node->fts_path)) continue;
+
+        const char* const currentPath = node->fts_path;
+        size_t suffixLen = strlen(currentPath) - strlen(currentFolderPath);
+        strncpy(oldPath, oldFolderPath, sizeof(oldPath) - 1);
+        strncpy(&oldPath[strlen(oldFolderPath)], &currentPath[strlen(currentFolderPath)], suffixLen );
+
+        if (node->fts_info == FTS_F) {
+            send_object_renamed(OBJECT_FILE, oldPath, currentPath, node->fts_statp->st_ino);
+        }else if(node->fts_info == FTS_D) {
+            send_object_renamed(OBJECT_FOLDER, oldPath, currentPath, node->fts_statp->st_ino);
         }
     }
 
@@ -266,6 +294,7 @@ static size_t handle_renamed_object(const EventData *const current, const EventD
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
         send_object_renamed(OBJECT_FOLDER, current->path, next->path, current->inode);
+        send_folder_contents_renamed(current->path, next->path);
     }
 
     return consumedEvents;
