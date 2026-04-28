@@ -14,6 +14,12 @@ const size_t FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT = 2;
 
 typedef struct
 {
+    const char **excluded_names;
+    size_t excluded_count;
+} WatcherConfig;
+
+typedef struct
+{
     char path[PATH_MAX+1];
     ino_t inode;
     FSEventStreamEventFlags flags;
@@ -21,6 +27,21 @@ typedef struct
     size_t dataForIndexInArray;
     bool initialized;
 } EventData;
+
+static bool is_path_excluded(const char *path, const WatcherConfig *config)
+{
+    if (!path || !config || config->excluded_count == 0) return false;
+
+    for (size_t i = 0; i<config->excluded_count; i++) {
+        const char* excluded = config->excluded_names[i];
+
+        if (strstr(path, excluded) != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 bool load_event_data_for_index(CFArrayRef array, CFIndex index, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, EventData *const out)
 {
@@ -77,7 +98,7 @@ bool is_file_modified_via_tmp_file(const EventData *const current, const EventDa
 
 typedef bool (*send_object_fn)(ObjectType object_type, const char *path, ino_t inode);
 
-static void send_folder_contents_recursive(const char *folder_path, send_object_fn sender)
+static void send_folder_contents_recursive(const char *folder_path, send_object_fn sender, const WatcherConfig *config)
 {
     if (!folder_path || !sender)
     {
@@ -105,6 +126,12 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
             continue;
         }
 
+        if (is_path_excluded(node->fts_path, config))
+        {
+            if (node->fts_info == FTS_D) fts_set(tree, node, FTS_SKIP);
+            continue;
+        }
+
         if (node->fts_info == FTS_F)
         {
             sender(OBJECT_FILE, node->fts_path, node->fts_statp->st_ino);
@@ -118,7 +145,7 @@ static void send_folder_contents_recursive(const char *folder_path, send_object_
     fts_close(tree);
 }
 
-static void send_folder_contents_renamed(const char* oldFolderPath, const char* currentFolderPath) {
+static void send_folder_contents_renamed(const char* oldFolderPath, const char* currentFolderPath, const WatcherConfig *config) {
     if (!oldFolderPath || !currentFolderPath) return;
 
     char* paths[] = {(char*)currentFolderPath, NULL};
@@ -136,6 +163,12 @@ static void send_folder_contents_renamed(const char* oldFolderPath, const char* 
     while ( (node = fts_read(tree)) != NULL ) {
         if (node->fts_level == 0) continue;
         if (is_DS_Store_path(node->fts_path)) continue;
+
+        if (is_path_excluded(node->fts_path, config))
+        {
+            if (node->fts_info == FTS_D) fts_set(tree, node, FTS_SKIP);
+            continue;
+        }
 
         const char* const currentPath = node->fts_path;
         size_t suffixLen = strlen(currentPath) - strlen(currentFolderPath);
@@ -281,7 +314,7 @@ static bool is_file_modified(const EventData *const current)
     return true;
 }
 
-static size_t handle_renamed_object(const EventData *const current, const EventData *const next)
+static size_t handle_renamed_object(const EventData *const current, const EventData *const next, const WatcherConfig *config)
 {
     size_t consumedEvents = 0;
 
@@ -294,7 +327,7 @@ static size_t handle_renamed_object(const EventData *const current, const EventD
     {
         consumedEvents = RENAMED_EVENTS_COUNT;
         send_object_renamed(OBJECT_FOLDER, current->path, next->path, current->inode);
-        send_folder_contents_renamed(current->path, next->path);
+        send_folder_contents_renamed(current->path, next->path, config);
     }
 
     return consumedEvents;
@@ -318,7 +351,7 @@ static size_t handle_removed_object(const EventData *const event)
     return consumedEvents;
 }
 
-static size_t handle_created_object(const EventData *const event)
+static size_t handle_created_object(const EventData *const event, const WatcherConfig *config)
 {
     size_t consumedEvents = 0;
 
@@ -331,13 +364,13 @@ static size_t handle_created_object(const EventData *const event)
     {
         consumedEvents = 1;
         send_object_created(OBJECT_FOLDER, event->path, event->inode);
-        send_folder_contents_recursive(event->path, send_object_created);
+        send_folder_contents_recursive(event->path, send_object_created, config);
     }
 
     return consumedEvents;
 }
 
-static size_t handle_added_object(const EventData *const event)
+static size_t handle_added_object(const EventData *const event, const WatcherConfig *config)
 {
     size_t consumedEvents = 0;
 
@@ -350,7 +383,7 @@ static size_t handle_added_object(const EventData *const event)
     {
         consumedEvents = 1;
         send_object_added(OBJECT_FOLDER, event->path, event->inode);
-        send_folder_contents_recursive(event->path, send_object_added);
+        send_folder_contents_recursive(event->path, send_object_added, config);
     }
 
     return consumedEvents;
@@ -406,7 +439,7 @@ static bool is_object_replaced(FSEventStreamCreateFlags objectTypeFlag, const Ev
     return true;
 }
 
-static size_t handle_replaced_object(const EventData *const current, const EventData *const next)
+static size_t handle_replaced_object(const EventData *const current, const EventData *const next, const WatcherConfig *config)
 {
     size_t consumedEvents = 0;
 
@@ -420,7 +453,7 @@ static size_t handle_replaced_object(const EventData *const current, const Event
     {
         consumedEvents = REPLACED_EVENTS_COUNT;
         send_object_replaced(OBJECT_FOLDER, path, current->inode, next->inode);
-        send_folder_contents_recursive(path, send_object_added);
+        send_folder_contents_recursive(path, send_object_added, config);
     }
 
     return consumedEvents;
@@ -429,7 +462,7 @@ static size_t handle_replaced_object(const EventData *const current, const Event
 static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, size_t numEvents, void *eventPaths, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds)
 {
     (void)streamRef;
-    (void)clientCallBackInfo;
+    const WatcherConfig *config = (const WatcherConfig *)clientCallBackInfo;
     CFArrayRef paths = (CFArrayRef)eventPaths;
     EventData one = {0};
     EventData another = {0};
@@ -476,12 +509,17 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
             consumedEvents = 1;
         }
 
+        if (consumedEvents == 0 && is_path_excluded(current->path, config))
+        {
+            consumedEvents = 1;
+        }
+
         if (consumedEvents == 0)
         { // handle renamed file/folder
-            consumedEvents = handle_renamed_object(current, next);
+            consumedEvents = handle_renamed_object(current, next, config);
         }
         if (consumedEvents == 0) {
-            consumedEvents = handle_replaced_object(current, next);
+            consumedEvents = handle_replaced_object(current, next, config);
         }
         if (consumedEvents == 0)
         { // handle modified file
@@ -493,11 +531,11 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
         }
         if (consumedEvents == 0)
         { // handle created file/folder
-            consumedEvents = handle_created_object(current);
+            consumedEvents = handle_created_object(current, config);
         }
         if (consumedEvents == 0)
         { // handle added file/folder
-            consumedEvents = handle_added_object(current);
+            consumedEvents = handle_added_object(current, config);
         }
 
         if (consumedEvents == 0)
@@ -509,7 +547,7 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
     }
 }
 
-bool run_watcher(const char *dir_path, double latency)
+bool run_watcher(const char *dir_path, double latency, const char **excluded_names, size_t excluded_count)
 {
     if (!dir_path || !does_object_exist(dir_path))
     {
@@ -530,8 +568,24 @@ bool run_watcher(const char *dir_path, double latency)
         CFRelease(path);
         return false;
     }
+
+    WatcherConfig config = {
+        .excluded_names = excluded_names,
+        .excluded_count = excluded_count,
+    };
+
+    WatcherConfig* ptr_config = config.excluded_count == 0 ? NULL : &config;
+
+    FSEventStreamContext ctx = {
+        .version = 0,
+        .info = ptr_config,
+        .retain = NULL,
+        .release = NULL,
+        .copyDescription = NULL,
+    };
+
     FSEventStreamCreateFlags flags = kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseExtendedData | kFSEventStreamCreateFlagUseCFTypes;
-    FSEventStreamRef streamRef = FSEventStreamCreate(NULL, stream_callback_with_CF_types, NULL, paths, kFSEventStreamEventIdSinceNow, latency, flags);
+    FSEventStreamRef streamRef = FSEventStreamCreate(NULL, stream_callback_with_CF_types, &ctx, paths, kFSEventStreamEventIdSinceNow, latency, flags);
 
     if (streamRef == NULL)
     {

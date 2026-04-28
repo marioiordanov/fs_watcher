@@ -28,7 +28,7 @@ use crate::util;
 ///
 /// #[tokio::main]
 /// async fn main() -> std::io::Result<()> {
-///     let (mut watcher, mut events) = AsyncWatcher::spawn(Path::new(".")).await?;
+///     let (mut watcher, mut events) = AsyncWatcher::spawn(Path::new("."), 2.0, &[]).await?;
 ///
 ///     while let Some(evt) = events.next().await {
 ///         println!("{}", evt?);
@@ -309,15 +309,45 @@ impl AsyncWatcher {
     ///
     /// If the helper exits very quickly (for example invalid path/arguments),
     /// this returns an error instead of a watcher.
-    pub async fn spawn(dir: &Path, latency: f32) -> io::Result<(Self, EventStream)> {
+    ///
+    /// `excluded` is a list of absolute paths to suppress from the event stream.
+    /// Any event whose path contains an entry as a substring is dropped.
+    /// - Paths must be absolute (starting with `/`); relative paths are rejected with an error.
+    /// - To exclude a directory and everything inside it, the path **must** end with `/`
+    ///   (e.g. `"/data/archive/"`) so the substring check does not accidentally match
+    ///   files or directories that merely share a common prefix.
+    pub async fn spawn(
+        dir: &Path,
+        latency: f32,
+        excluded: &[&str],
+    ) -> io::Result<(Self, EventStream)> {
         let fs_watch_code = util::ensure_helper_on_disk()?;
-        let mut fs_watch_process = Command::new(fs_watch_code)
-            .arg(dir)
+        let mut cmd = Command::new(fs_watch_code);
+        cmd.arg(dir)
             .arg(latency.to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
+            .stderr(std::process::Stdio::null());
+        for name in excluded {
+            let path = Path::new(name);
+
+            if path.is_relative() {
+                return io::Result::Err(io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "only supporting absolute paths",
+                ));
+            }
+
+            // only for UNIX
+            if path.is_dir() && !path.ends_with("/") {
+                return io::Result::Err(io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "path must end with '/' when targeting a directory: \"/some/path/\"",
+                ));
+            }
+            cmd.arg(name);
+        }
+        let mut fs_watch_process = cmd.spawn()?;
 
         match timeout(Duration::from_millis(150), fs_watch_process.wait()).await {
             Ok(Ok(status)) => {
