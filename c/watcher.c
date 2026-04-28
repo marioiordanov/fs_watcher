@@ -32,10 +32,13 @@ static bool is_path_excluded(const char *path, const WatcherConfig *config)
 {
     if (!path || !config || config->excluded_count == 0) return false;
 
-    for (size_t i = 0; i<config->excluded_count; i++) {
-        const char* excluded = config->excluded_names[i];
+    char path_with_slash[PATH_MAX + 2] = {0};
+    size_t len = strlen(path);
+    memcpy(path_with_slash, path, len);
+    path_with_slash[len] = '/';
 
-        if (strstr(path, excluded) != NULL) {
+    for (size_t i = 0; i < config->excluded_count; i++) {
+        if (strstr(path_with_slash, config->excluded_names[i]) != NULL) {
             return true;
         }
     }
