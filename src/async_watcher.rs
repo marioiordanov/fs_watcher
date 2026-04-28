@@ -319,7 +319,7 @@ impl AsyncWatcher {
     pub async fn spawn(
         dir: &Path,
         latency: f32,
-        excluded: &[&str],
+        excluded: &[&Path],
     ) -> io::Result<(Self, EventStream)> {
         let fs_watch_code = util::ensure_helper_on_disk()?;
         let mut cmd = Command::new(fs_watch_code);
@@ -328,9 +328,7 @@ impl AsyncWatcher {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-        for name in excluded {
-            let path = Path::new(name);
-
+        for path in excluded {
             if path.is_relative() {
                 return io::Result::Err(io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -345,7 +343,7 @@ impl AsyncWatcher {
                     "path must end with '/' when targeting a directory: \"/some/path/\"",
                 ));
             }
-            cmd.arg(name);
+            cmd.arg(path);
         }
         let mut fs_watch_process = cmd.spawn()?;
 
