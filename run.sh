@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ./build.sh
-./fs_watch /Users/mario/Projects/test-watcher/data 0.5
+./fs_watch /Users/mario/Projects/test-watcher/data 3

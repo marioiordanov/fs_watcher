@@ -11,6 +11,7 @@
 const size_t RENAMED_EVENTS_COUNT = 2;
 const size_t REPLACED_EVENTS_COUNT = 2;
 const size_t FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT = 2;
+const size_t FILE_MODIFIED_SAVE_SAFE_EVENTS_COUNT = 3;
 
 typedef struct
 {
@@ -24,8 +25,6 @@ typedef struct
     ino_t inode;
     FSEventStreamEventFlags flags;
     FSEventStreamEventId eventId;
-    size_t dataForIndexInArray;
-    bool initialized;
 } EventData;
 
 static bool is_path_excluded(const char *path, const WatcherConfig *config)
@@ -44,6 +43,48 @@ static bool is_path_excluded(const char *path, const WatcherConfig *config)
     }
 
     return false;
+}
+
+static void translate_fs_event_flag(FSEventStreamEventFlags f)
+{
+    struct
+    {
+        FSEventStreamEventFlags flag;
+        char *translation;
+    } bits[] = {
+        {kFSEventStreamEventFlagItemIsDir, "Folder"},
+        {kFSEventStreamEventFlagItemIsFile, "File"},
+        {kFSEventStreamEventFlagItemXattrMod, "ExtendedAttributesChanged"},
+        {kFSEventStreamEventFlagItemChangeOwner, "OwnerChanged"},
+        {kFSEventStreamEventFlagItemFinderInfoMod, "FinderInfoChanged"},
+        {kFSEventStreamEventFlagItemModified, "ContentsChanged"},
+        {kFSEventStreamEventFlagItemRenamed, "Renamed"},
+        {kFSEventStreamEventFlagItemInodeMetaMod, "MetadataChanged"},
+        {kFSEventStreamEventFlagItemRemoved, "Removed"},
+        {kFSEventStreamEventFlagItemCreated, "Created"},
+        {kFSEventStreamEventFlagOwnEvent, "OwnEvent"},
+        {kFSEventStreamEventFlagItemCloned, "Cloned"}};
+
+    bool found = false;
+    unsigned int current = 0;
+    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++)
+    {
+        if (bits[i].flag & f)
+        {
+            found = true;
+            current |= bits[i].flag;
+            fprintf(stderr, "%s ", bits[i].translation);
+        }
+    }
+
+    if (!found)
+    {
+        fprintf(stderr, "Unrecognized event %d", f);
+    }
+
+    if (current != f) {
+        fprintf(stderr, "Not all pieces handled %d", f - current);
+    }
 }
 
 bool load_event_data_for_index(CFArrayRef array, CFIndex index, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, EventData *const out)
@@ -75,7 +116,6 @@ bool load_event_data_for_index(CFArrayRef array, CFIndex index, const FSEventStr
 
     out->flags = eventFlags[index];
     out->eventId = eventIds[index];
-    out->dataForIndexInArray = index;
 
     return true;
 }
@@ -83,6 +123,129 @@ bool load_event_data_for_index(CFArrayRef array, CFIndex index, const FSEventStr
 static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlags bit)
 {
     return (flag & bit) != 0;
+}
+
+// the link between the 3 events is the following: First and second have different names, but same inodes. Because first macOS creates a backup
+// Then second and third have different names and inodes, but the relation between first and last is that they have equal names.
+bool check_and_order_if_file_is_modified_via_tmp_file_using_3_events(const EventData* (*p_arr)[3]) {
+    const EventData* const first = (*p_arr)[0];
+    const EventData* const second = (*p_arr)[1];
+    const EventData* const third = (*p_arr)[2];
+
+    if ( first == NULL || second == NULL || third == NULL ) return false;
+
+    const EventData* arr[3] = {0};
+    FSEventStreamEventFlags renamed_and_cloned = kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemCloned | kFSEventStreamEventFlagItemIsFile;
+    FSEventStreamEventFlags renamed_removed_and_cloned = renamed_and_cloned | kFSEventStreamEventFlagItemRemoved;
+
+    // first order the events: [ (original name + old inode) , (sb name + old inode), (original name + new inode)]
+
+    if ((first->inode != second->inode) && (first->inode != third->inode)) {
+        arr[2] = first; // this means that first inode is different from the other 2, so its the new inode
+
+        if (strcmp(first->path, second->path) == 0) {
+            arr[0] = second;
+            arr[1] = third;
+        }else {
+            arr[0] = third;
+            arr[1] = second;
+        }
+    }else { //first inode is equal to second or third. Therefore it is the old inode. Now we need to find which is the temp file
+        if (strcmp(first->path, second->path) == 0) {
+            arr[0] = first;
+            arr[1] = third;
+            arr[2] = second;
+        }else if (strcmp(first->path, third->path) == 0) {
+            arr[0] = first;
+            arr[1] = second;
+            arr[2] = third;
+        }else {
+            arr[1] = first;
+            if (first->inode == second->inode) {
+                arr[0] = second;
+                arr[2] = third;
+            }else {
+                arr[0] = third;
+                arr[2] = second;
+            }
+        }
+    }
+
+    // now events are ordered, lets check the attributes
+    if (!has_flag(arr[0]->flags, renamed_and_cloned)) return false;
+    if (!has_flag(arr[1]->flags, renamed_removed_and_cloned)) return false;
+    if (!has_flag(arr[2]->flags, renamed_and_cloned)) return false;
+
+    (*p_arr)[0] = arr[0];
+    (*p_arr)[1] = arr[1];
+    (*p_arr)[2] = arr[2];
+
+    return true;
+}
+bool is_file_modified_via_tmp_file_with_3_events(const EventData *const first, const EventData *const second, const EventData *const third) {
+    if ( first == NULL || second == NULL || third == NULL ) return false;
+    const EventData* arr[3] = {0};
+    FSEventStreamEventFlags renamed_and_cloned = kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemCloned | kFSEventStreamEventFlagItemIsFile;
+    FSEventStreamEventFlags renamed_removed_and_cloned = renamed_and_cloned | kFSEventStreamEventFlagItemRemoved;
+
+    // first order the events: [ (original name + old inode) , (sb name + old inode), (original name + new inode)]
+
+    if ((first->inode != second->inode) && (first->inode != third->inode)) {
+        arr[2] = first; // this means that first inode is different from the other 2, so its the new inode
+
+        if (strcmp(first->path, second->path) == 0) {
+            arr[0] = second;
+            arr[1] = third;
+        }else {
+            arr[0] = third;
+            arr[1] = second;
+        }
+    }else { //first inode is equal to second or third. Therefore it is the old inode. Now we need to find which is the temp file
+        if (strcmp(first->path, second->path) == 0) {
+            arr[0] = first;
+            arr[1] = third;
+            arr[2] = second;
+        }else if (strcmp(first->path, third->path) == 0) {
+            arr[0] = first;
+            arr[1] = second;
+            arr[2] = third;
+        }else {
+            arr[1] = first;
+            if (first->inode == second->inode) {
+                arr[0] = second;
+                arr[2] = third;
+            }else {
+                arr[0] = third;
+                arr[2] = second;
+            }
+        }
+    }
+
+    // now events are ordered, lets check the attributes
+    if (!has_flag(arr[0]->flags, renamed_and_cloned)) return false;
+    if (!has_flag(arr[1]->flags, renamed_removed_and_cloned)) return false;
+    if (!has_flag(arr[2]->flags, renamed_and_cloned)) return false;
+
+    return true;
+}
+
+bool is_file_modified_via_2_events(const EventData *const first, const EventData *const second) {
+    if (first == NULL || second == NULL) return false;
+
+    if (strcmp(first->path, second->path) != 0) return false;
+
+    if (first->inode != second->inode) return false;
+
+    bool first_exists = does_object_with_inode_exist(first->path, first->inode);
+    bool second_exists = does_object_with_inode_exist(second->path, second->inode);
+    if ((!first_exists && !second_exists) || (first_exists && second_exists)) return false;
+
+    FSEventStreamEventFlags renamed_and_cloned = kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemCloned | kFSEventStreamEventFlagItemIsFile;
+
+    if (!has_flag(first->flags, renamed_and_cloned)) return false;
+    if (!has_flag(second->flags, renamed_and_cloned)) return false;
+
+    return true;
 }
 
 bool is_file_modified_via_tmp_file(const EventData *const current, const EventData *const next)
@@ -392,19 +555,25 @@ static size_t handle_added_object(const EventData *const event, const WatcherCon
     return consumedEvents;
 }
 
-static size_t handle_modified_file(const EventData *const current, const EventData *const next)
+static size_t handle_modified_file(const EventData *const first, const EventData *const second, const EventData *const third)
 {
     size_t consumedEvents = 0;
 
-    if (is_file_modified_via_tmp_file(current, next))
+    const EventData* arr[3] = {first, second, third};
+    if (check_and_order_if_file_is_modified_via_tmp_file_using_3_events(&arr)) {
+        consumedEvents = FILE_MODIFIED_SAVE_SAFE_EVENTS_COUNT;
+        fprintf(stderr, "modified via safe safe");
+        //send_object_modified(OBJECT_FILE, arr[0]->path, arr[0]->inode, arr[2]->inode);
+    }
+    else if (is_file_modified_via_tmp_file(first, second))
     {
         consumedEvents = FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT;
-        send_object_modified(OBJECT_FILE, next->path, current->inode, next->inode);
+        send_object_modified(OBJECT_FILE, second->path, first->inode, second->inode);
     }
-    else if (is_file_modified(current))
+    else if (is_file_modified(first))
     {
         consumedEvents = 1;
-        send_object_modified(OBJECT_FILE, current->path, current->inode, current->inode);
+        send_object_modified(OBJECT_FILE, first->path, first->inode, first->inode);
     }
 
     return consumedEvents;
@@ -467,86 +636,82 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
     (void)streamRef;
     const WatcherConfig *config = (const WatcherConfig *)clientCallBackInfo;
     CFArrayRef paths = (CFArrayRef)eventPaths;
-    EventData one = {0};
-    EventData another = {0};
-    EventData *current = NULL;
-    EventData *next = NULL;
 
+    enum { window_len = 5 };
+    EventData window[window_len] = {0};
+    EventData* window_ptrs[window_len] = {0};
+    for(size_t i = 0; i < window_len; i++) {
+        window_ptrs[i] = &window[i];
+    }
+
+    fprintf(stderr, "events count %lu\n", numEvents);
+    size_t elements_to_load = window_len;
     for (size_t i = 0; i < numEvents;)
     {
-        size_t consumedEvents = 0;
-        bool canLoadNext = (numEvents - (i + 1)) > 0;
-
-        // check if current points to something, if not then do initial loading
-        if (current == NULL)
-        {
-            current = &one;
-            load_event_data_for_index(paths, i, eventFlags, eventIds, current);
-        }
-        // if next is loaded, check if its index is the current index, if yes
-        if (next != NULL && next->dataForIndexInArray == i)
-        {
-            current = next;
-            next = NULL;
-        }
-        if (current->dataForIndexInArray != i)
-        {
-            load_event_data_for_index(paths, i, eventFlags, eventIds, current);
-        }
-        if (next == NULL && canLoadNext)
-        {
-            if (current == &one)
-            {
-                next = &another;
+        size_t k = i;
+        for (; k < i + elements_to_load; k++) {
+            if (k < numEvents) {
+                load_event_data_for_index(paths, k, eventFlags, eventIds, window_ptrs[ k % window_len ]);
+            }else {
+                window_ptrs[ k % window_len ] = NULL;
             }
-            else
-            {
-                next = &one;
+        }
+
+        for (size_t t = 0; t < window_len; t++) {
+            EventData* current = window_ptrs[(k+t) % window_len];
+
+            if (current != NULL) {
+                fprintf(stderr, "%s %llu %llu ", current->path, current->inode, current->eventId);
+                translate_fs_event_flag(current->flags);
+                fprintf(stderr, "\n");
             }
-
-            load_event_data_for_index(paths, i + 1, eventFlags, eventIds, next);
         }
 
-        if (is_DS_Store_path(current->path))
+        size_t consumed = 0;
+
+        if (is_DS_Store_path(window_ptrs[k % window_len]->path))
         {
-            consumedEvents = 1;
+            consumed = 1;
         }
 
-        if (consumedEvents == 0 && is_path_excluded(current->path, config))
+        if (consumed == 0 && is_path_excluded(window_ptrs[ k % window_len]->path, config))
         {
-            consumedEvents = 1;
+            consumed = 1;
         }
 
-        if (consumedEvents == 0)
-        { // handle renamed file/folder
-            consumedEvents = handle_renamed_object(current, next, config);
-        }
-        if (consumedEvents == 0) {
-            consumedEvents = handle_replaced_object(current, next, config);
-        }
-        if (consumedEvents == 0)
+        if (consumed == 0)
         { // handle modified file
-            consumedEvents = handle_modified_file(current, next);
-        }
-        if (consumedEvents == 0)
-        { // handle removed file/folder
-            consumedEvents = handle_removed_object(current);
-        }
-        if (consumedEvents == 0)
-        { // handle created file/folder
-            consumedEvents = handle_created_object(current, config);
-        }
-        if (consumedEvents == 0)
-        { // handle added file/folder
-            consumedEvents = handle_added_object(current, config);
+            consumed = handle_modified_file(window_ptrs[k % window_len ], window_ptrs[(k+1) % window_len], window_ptrs[(k+2) % window_len]);
         }
 
-        if (consumedEvents == 0)
+        // if (consumed == 0)
+        // { // handle renamed file/folder
+        //     consumed = handle_renamed_object(window_ptrs[k], window_ptrs[k+1], config);
+        // }
+        // if (consumed == 0) {
+        //     consumed = handle_replaced_object(window_ptrs[k], window_ptrs[k+1], config);
+        // }
+
+        // if (consumed == 0)
+        // { // handle removed file/folder
+        //     consumed = handle_removed_object(window_ptrs[k]);
+        // }
+        // if (consumed == 0)
+        // { // handle created file/folder
+        //     consumed = handle_created_object(window_ptrs[k], config);
+        // }
+        // if (consumed == 0)
+        // { // handle added file/folder
+        //     consumed = handle_added_object(window_ptrs[k], config);
+        // }
+
+        if (consumed == 0)
         {
-            consumedEvents = 1;
+            consumed = 1;
         }
 
-        i += consumedEvents;
+        i += elements_to_load;
+        elements_to_load = consumed;
     }
 }
 
@@ -620,3 +785,56 @@ bool run_watcher(const char *dir_path, double latency, const char **excluded_nam
     CFRelease(path);
     return true;
 }
+
+
+#ifdef RUN_TESTS
+void test_ordering_of_modify_with_3_events(void) {
+    FSEventStreamEventFlags renamed_cloned =
+        kFSEventStreamEventFlagItemRenamed |
+        kFSEventStreamEventFlagItemCloned  |
+        kFSEventStreamEventFlagItemIsFile;
+    FSEventStreamEventFlags renamed_removed_cloned =
+        renamed_cloned | kFSEventStreamEventFlagItemRemoved;
+
+    EventData a = { .inode = 100, .flags = renamed_cloned, .eventId = 10};
+    EventData b = { .inode = 100, .flags = renamed_removed_cloned, .eventId = 17 };
+    EventData c = { .inode = 200, .flags = renamed_cloned, .eventId = 30 };
+    strncpy(a.path, "data/file.txt",    PATH_MAX);
+    strncpy(b.path, "data/file.txt.sb-5c789d70-vKNEuX", PATH_MAX);
+    strncpy(c.path, "data/file.txt",    PATH_MAX);
+
+    // all 6 permutations
+    const EventData *perms[6][3] = {
+        { &a, &b, &c },
+        { &a, &c, &b },
+        { &b, &a, &c },
+        { &b, &c, &a },
+        { &c, &a, &b },
+        { &c, &b, &a },
+    };
+
+    for (int i = 0; i < 6; i++) {
+        const EventData *arr[3] = { perms[i][0], perms[i][1], perms[i][2] };
+        bool ok = check_and_order_if_file_is_modified_via_tmp_file_using_3_events(&arr);
+
+        assert(ok);
+        assert(strcmp(arr[0]->path, "data/file.txt")    == 0); // A
+        assert(strcmp(arr[1]->path, "data/file.txt.sb-5c789d70-vKNEuX") == 0); // B
+        assert(strcmp(arr[2]->path, "data/file.txt")    == 0); // C
+        assert(arr[0]->inode == 100);
+        assert(arr[1]->inode == 100);
+        assert(arr[2]->inode == 200);
+    }
+
+    printf("%s completed successfully\n", __func__);
+}
+
+void test_processing_events_with_DS_Store_event_in_between() {
+    /*
+    /Users/mario/Projects/test-watcher/data/Untitled1.pages 132602156 1992326 File ExtendedAttributesChanged Renamed Cloned
+/Users/mario/Projects/test-watcher/data/.DS_Store 128953796 1992354 File ContentsChanged MetadataChanged
+/Users/mario/Projects/test-watcher/data/Untitled1.pages.sb-5c789d70-lCXz8U 132602156 1992415 File Renamed Removed Cloned
+/Users/mario/Projects/test-watcher/data/Untitled1.pages 132689376 1992473 File ExtendedAttributesChanged Renamed Cloned
+*/
+}
+#endif
