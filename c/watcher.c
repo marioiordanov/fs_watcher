@@ -11,6 +11,7 @@
 const size_t RENAMED_EVENTS_COUNT = 2;
 const size_t REPLACED_EVENTS_COUNT = 2;
 const size_t FILE_MODIFIED_VIA_TMP_FILE_EVENTS_COUNT = 2;
+const size_t FILE_MODIFIED_VIA_REPLACE = 2;
 const size_t FILE_MODIFIED_SAVE_SAFE_EVENTS_COUNT = 3;
 
 typedef struct
@@ -603,6 +604,11 @@ static size_t handle_modified_file(const EventData *const first, const EventData
     {
         consumedEvents = FILE_MODIFIED_SAVE_SAFE_EVENTS_COUNT;
         send_object_modified(OBJECT_FILE, arr[0]->path, arr[0]->inode, arr[2]->inode);
+    }
+    else if (is_file_modified_via_2_events(first, second))
+    {
+        consumedEvents = FILE_MODIFIED_VIA_REPLACE;
+        send_object_modified(OBJECT_FILE, first->path, first->inode, second->inode);
     }
     else if (is_file_modified_via_tmp_file(first, second))
     {
