@@ -114,7 +114,7 @@ pub enum Event {
 impl std::fmt::Display for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Event::FileRemoved(path, ..) => write!(f, "file removed: {}", path.display()),
+            Event::FileRemoved(path, inode) => write!(f, "file removed: {} {inode}", path.display()),
             Event::FolderRemoved(path, ..) => write!(f, "folder removed: {}", path.display()),
             Event::FolderAdded(path, inode) => {
                 write!(f, "folder added: {} {inode}", path.display())

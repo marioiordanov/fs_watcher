@@ -2,16 +2,19 @@
 #include "watcher.h"
 #include <stdio.h>
 
-int main() {
+int main()
+{
     test_ordering_of_modify_with_3_events();
     printf("all tests passed\n");
     return 0;
 }
+
 #else
 #include <stdio.h>
 #include <stdlib.h>
 #include "watcher.h"
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     double latency = atof(argv[2]);
     const char **excluded = (const char **)(argc > 3 ? argv + 3 : NULL);
     size_t excluded_count = argc > 3 ? (size_t)(argc - 3) : 0;

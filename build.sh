@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 clang -Wall -Wextra -O2 \
- -Ic/include \
+ -Ic/ \
  c/fs_watch.c c/watcher.c c/protocol.c c/util.c \
  -framework CoreServices -framework CoreFoundation \
  -o fs_watch
