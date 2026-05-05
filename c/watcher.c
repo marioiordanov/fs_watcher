@@ -48,49 +48,6 @@ static bool is_path_excluded(const char *path, const WatcherConfig *config)
     return false;
 }
 
-static void translate_fs_event_flag(FSEventStreamEventFlags f)
-{
-    struct
-    {
-        FSEventStreamEventFlags flag;
-        char *translation;
-    } bits[] = {
-        {kFSEventStreamEventFlagItemIsDir, "Folder"},
-        {kFSEventStreamEventFlagItemIsFile, "File"},
-        {kFSEventStreamEventFlagItemXattrMod, "ExtendedAttributesChanged"},
-        {kFSEventStreamEventFlagItemChangeOwner, "OwnerChanged"},
-        {kFSEventStreamEventFlagItemFinderInfoMod, "FinderInfoChanged"},
-        {kFSEventStreamEventFlagItemModified, "ContentsChanged"},
-        {kFSEventStreamEventFlagItemRenamed, "Renamed"},
-        {kFSEventStreamEventFlagItemInodeMetaMod, "MetadataChanged"},
-        {kFSEventStreamEventFlagItemRemoved, "Removed"},
-        {kFSEventStreamEventFlagItemCreated, "Created"},
-        {kFSEventStreamEventFlagOwnEvent, "OwnEvent"},
-        {kFSEventStreamEventFlagItemCloned, "Cloned"}};
-
-    bool found = false;
-    unsigned int current = 0;
-    for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++)
-    {
-        if (bits[i].flag & f)
-        {
-            found = true;
-            current |= bits[i].flag;
-            fprintf(stderr, "%s ", bits[i].translation);
-        }
-    }
-
-    if (!found)
-    {
-        fprintf(stderr, "Unrecognized event %d", f);
-    }
-
-    if (current != f)
-    {
-        fprintf(stderr, "Not all pieces handled %d", f - current);
-    }
-}
-
 bool load_event_data_for_index_if_not_excluded(CFArrayRef array, CFIndex index, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds, const WatcherConfig *config, EventData *const out)
 {
     CFDictionaryRef pathInodeDictRef = (CFDictionaryRef)CFArrayGetValueAtIndex(array, index);
@@ -730,7 +687,6 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
         window_ptrs[i] = &window[i];
     }
 
-    fprintf(stderr, "events count %lu\n", numEvents);
     size_t elements_to_load = window_len;
     size_t w_idx = 0;
 
@@ -754,18 +710,6 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
             {
                 window_ptrs[w_idx % window_len] = NULL;
                 w_idx++;
-            }
-        }
-
-        for (size_t t = 0; t < window_len; t++)
-        {
-            EventData *current = window_ptrs[(w_idx + t) % window_len];
-
-            if (current != NULL)
-            {
-                fprintf(stderr, "%s %llu %llu ", current->path, current->inode, current->eventId);
-                translate_fs_event_flag(current->flags);
-                fprintf(stderr, "\n");
             }
         }
 
