@@ -468,6 +468,8 @@ bool is_folder_renamed(const EventData *const current, const EventData *const ne
 
 static bool is_object_removed(FSEventStreamEventFlags object_flag, const EventData *const event)
 {
+    if (event == NULL) return false;
+
     bool is_renamed = has_flag(event->flags, kFSEventStreamEventFlagItemRenamed);
     bool is_deleted = has_flag(event->flags, kFSEventStreamEventFlagItemRemoved);
 
@@ -501,6 +503,8 @@ static bool is_folder_removed(const EventData *const event)
 
 static bool is_object_created(FSEventStreamEventFlags object_flag, const EventData *const event)
 {
+    if (event == NULL) return false;
+
     if (!has_flag(event->flags, object_flag))
         return false;
     if (!has_flag(event->flags, kFSEventStreamEventFlagItemCreated))
@@ -739,27 +743,23 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
     fprintf(stderr, "events count %lu\n", numEvents);
     size_t elements_to_load = window_len;
     size_t w_idx = 0;
+    size_t i = 0;
 
-    for (size_t i = 0; i < numEvents;)
-    {
+    while (window_ptrs[w_idx % window_len] != NULL) {
         size_t k = i;
-        for (; k < i + elements_to_load; k++)
-        {
-            if (k < numEvents)
-            {
-                if (load_event_data_for_index_if_not_excluded(paths, k, eventFlags, eventIds, config, window_ptrs[w_idx % window_len]))
-                {
+
+        // loading of data
+        for (; k < i + elements_to_load; k++) {
+            if ( k < numEvents ) {
+                if (load_event_data_for_index_if_not_excluded(paths, k, eventFlags, eventIds, config, window_ptrs[w_idx % window_len])){
                     w_idx++;
-                }
-                else
-                {
+                }else {
                     i++;
                 }
-            }
-            else
-            {
+            } else {
                 window_ptrs[w_idx % window_len] = NULL;
                 w_idx++;
+                break;
             }
         }
 
