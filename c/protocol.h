@@ -2,10 +2,15 @@
 
 #include <stdbool.h>
 #include <sys/stat.h>
+#include <stdint.h>
+#include <unistd.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef bool (*protocol_write_fn)(const uint8_t *buf, size_t len, void* ctx);
+void protocol_set_writer(protocol_write_fn write_fn, void* ctx);
 
 typedef enum {
     OBJECT_FILE   = 1,
