@@ -6,4 +6,5 @@ bool run_watcher(const char* dir_path, double latency, const char **excluded_nam
 
 #ifdef RUN_TESTS
 void test_ordering_of_modify_with_3_events();
+void test_multiple_file_moves_outside_of_watched_directory();
 #endif

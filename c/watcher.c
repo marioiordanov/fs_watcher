@@ -28,6 +28,8 @@ typedef struct
     FSEventStreamEventId eventId;
 } EventData;
 
+typedef bool (*load_event_fn)(size_t index, const void *ctx, const WatcherConfig* config, EventData *out);
+
 static bool is_path_excluded(const char *path, const WatcherConfig *config)
 {
     if (!path || !config || config->excluded_count == 0)
@@ -49,7 +51,7 @@ static bool is_path_excluded(const char *path, const WatcherConfig *config)
     return false;
 }
 
-static void translate_fs_event_flag(FSEventStreamEventFlags f)
+static void __attribute__((unused)) translate_fs_event_flag(FSEventStreamEventFlags f)
 {
     struct
     {
@@ -137,7 +139,7 @@ bool load_event_data_for_index_if_not_excluded(CFArrayRef array, CFIndex index, 
 
 static inline bool has_flag(FSEventStreamEventFlags flag, FSEventStreamEventFlags bit)
 {
-    return (flag & bit) != 0;
+    return (flag & bit) == bit;
 }
 
 // the link between the 3 events is the following: First and second have different names, but same inodes. Because first macOS creates a backup
@@ -723,12 +725,7 @@ static size_t handle_replaced_object(const EventData *const current, const Event
     return consumedEvents;
 }
 
-static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, size_t numEvents, void *eventPaths, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds)
-{
-    (void)streamRef;
-    const WatcherConfig *config = (const WatcherConfig *)clientCallBackInfo;
-    CFArrayRef paths = (CFArrayRef)eventPaths;
-
+static void process_event_window(size_t numEvents, load_event_fn load_fn, const void* load_ctx, const WatcherConfig* config) {
     enum
     {
         window_len = 3
@@ -740,7 +737,6 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
         window_ptrs[i] = &window[i];
     }
 
-    fprintf(stderr, "events count %lu\n", numEvents);
     size_t elements_to_load = window_len;
     size_t w_idx = 0;
     size_t i = 0;
@@ -751,15 +747,14 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
         // loading of data
         for (; k < i + elements_to_load; k++) {
             if ( k < numEvents ) {
-                if (load_event_data_for_index_if_not_excluded(paths, k, eventFlags, eventIds, config, window_ptrs[w_idx % window_len])){
-                    w_idx++;
+                if (load_fn(k, load_ctx, config, window_ptrs[w_idx % window_len])) {
+                    w_idx ++ ;
                 }else {
                     i++;
                 }
             } else {
                 window_ptrs[w_idx % window_len] = NULL;
                 w_idx++;
-                break;
             }
         }
 
@@ -810,6 +805,33 @@ static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void 
         i += elements_to_load;
         elements_to_load = consumed;
     }
+}
+
+typedef struct {
+    CFArrayRef paths;
+    const FSEventStreamEventFlags *eventFlags;
+    const FSEventStreamEventId *eventIds;
+} CFLoaderCtx;
+
+static bool cf_event_loader(size_t index, const void* ctx, const WatcherConfig* config, EventData* out) {
+    const CFLoaderCtx* c = (const CFLoaderCtx*)ctx;
+
+    return load_event_data_for_index_if_not_excluded(c->paths, (CFIndex)index, c->eventFlags, c->eventIds, config, out);
+}
+
+static void stream_callback_with_CF_types(ConstFSEventStreamRef streamRef, void *clientCallBackInfo, size_t numEvents, void *eventPaths, const FSEventStreamEventFlags *eventFlags, const FSEventStreamEventId *eventIds)
+{
+    (void)streamRef;
+    const WatcherConfig *config = (const WatcherConfig *)clientCallBackInfo;
+    CFArrayRef paths = (CFArrayRef)eventPaths;
+
+    CFLoaderCtx ctx = {
+        .eventFlags = eventFlags,
+        .eventIds = eventIds,
+        .paths = paths
+    };
+
+    process_event_window(numEvents, &cf_event_loader, &ctx, config);
 }
 
 bool run_watcher(const char *dir_path, double latency, const char **excluded_names, size_t excluded_count)
@@ -923,6 +945,98 @@ void test_ordering_of_modify_with_3_events(void)
         assert(arr[1]->inode == 100);
         assert(arr[2]->inode == 200);
     }
+
+    printf("%s completed successfully\n", __func__);
+}
+
+typedef struct {
+    const EventData* events;
+    size_t count;
+} ArrayLoaderCtx;
+
+static bool array_event_loader(size_t index, const void* ctx, const WatcherConfig* config, EventData* out) {
+    (void)config;
+    const ArrayLoaderCtx* c = (const ArrayLoaderCtx*)ctx;
+    if (index >= c->count) {
+        return false;
+    }
+
+    *out = c->events[index];
+    return true;
+}
+
+typedef struct
+{
+    char buf[4096];
+    size_t offset;
+} ByteBuffer;
+
+static bool buffer_writer(const uint8_t* buf, size_t len, void* ctx) {
+    ByteBuffer* array_ctx = ctx;
+    memcpy(array_ctx->buf + array_ctx->offset, buf, len);
+    array_ctx->offset+=len;
+    return true;
+}
+
+// Tests that when multiple files are moved outside the watched directory,
+// each one is reported as a removal.
+//
+// When a file is renamed/moved to a location outside the watched directory,
+// FSEvents fires a single Renamed event for the path that disappeared.
+// There is no second event for the destination because it is out of scope.
+// The watcher must therefore treat a lone Renamed event (with no paired
+// event sharing the same inode) as a removal.
+//
+// Setup:
+//   Four files in "test-folder/" each receive a Renamed event with no
+//   corresponding destination event. The first event also carries an
+//   unrecognised flag (0x100000) to verify it is not misclassified.
+//
+// Strategy:
+//   1. Manually call send_object_removed for each event and capture the
+//      resulting bytes as the expected output.
+//   2. Feed the same four EventData items through process_event_window and
+//      capture its output.
+//   3. Assert the two byte sequences are identical.
+void test_multiple_file_moves_outside_of_watched_directory()
+{
+    // file is renamed
+    FSEventStreamEventFlags file_renamed = kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemRenamed;
+
+    EventData events[4] = {
+        { .inode = 132460857, .eventId = 4736588, .flags = file_renamed + 1048576},
+         { .inode = 129974653, .eventId = 4736592, .flags = file_renamed },
+         { .inode = 132784364, .eventId = 4736606, .flags = file_renamed },
+         { .inode = 132751929, .eventId = 4736618, .flags = file_renamed }
+    };
+
+    size_t path_buffer_to_fill = sizeof(events[0].path) - 1;
+
+    strncpy(events[0].path, "test-folder/da", path_buffer_to_fill);
+    strncpy(events[1].path, "test-folder/a", path_buffer_to_fill);
+    strncpy(events[2].path, "test-folder/Untitled1.pages", path_buffer_to_fill);
+    strncpy(events[3].path, "test-folder/Untitled1.docx", path_buffer_to_fill);
+
+    size_t count = sizeof(events) / sizeof(events[0]);
+
+    ByteBuffer expected_ctx = {0};
+
+    protocol_set_writer(buffer_writer, &expected_ctx);
+
+    for(size_t i = 0; i < count; i++) {
+        send_object_removed(OBJECT_FILE, events[i].path, events[i].inode);
+    }
+    ByteBuffer resulted_ctx = {0};
+    protocol_set_writer(buffer_writer, &resulted_ctx);
+
+    ArrayLoaderCtx ctx = {
+        .events = events,
+        .count = count
+    };
+
+    process_event_window(count, &array_event_loader, (const void*)&ctx, NULL);
+
+    assert(memcmp(expected_ctx.buf, resulted_ctx.buf, sizeof(resulted_ctx.buf)) == 0);
 
     printf("%s completed successfully\n", __func__);
 }
