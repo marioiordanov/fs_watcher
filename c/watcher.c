@@ -1040,4 +1040,40 @@ void test_multiple_file_moves_outside_of_watched_directory()
 
     printf("%s completed successfully\n", __func__);
 }
+
+void test_file_renamed()
+{
+    char path[PATH_MAX] = "./test_FILE_RENAMED_XXXXXX";
+    int fd = mkstemp(path);
+    close(fd);
+
+    struct stat st;
+    stat(path, &st);
+
+    FSEventStreamEventFlags file_renamed = kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemRenamed;
+
+    EventData events[2] = {
+        { .inode = st.st_ino, .eventId = 5705602, .flags = file_renamed },
+        { .inode = st.st_ino, .eventId = 5705603, .flags = file_renamed },
+    };
+    strncpy(events[0].path, "./non-existing-file", sizeof(events[0].path) - 1);
+    strncpy(events[1].path, path, sizeof(events[1].path) - 1);
+
+    ByteBuffer expected = {0};
+    protocol_set_writer(buffer_writer, &expected);
+    send_object_renamed(OBJECT_FILE, events[0].path, events[1].path, events[0].inode);
+
+    ByteBuffer result = {0};
+    protocol_set_writer(buffer_writer, &result);
+    ArrayLoaderCtx ctx = { .events = events, .count = 2 };
+    process_event_window(2, &array_event_loader, (const void *)&ctx, NULL);
+
+    protocol_set_writer(NULL, NULL);
+
+    assert(expected.offset == result.offset);
+    assert(memcmp(expected.buf, result.buf, expected.offset) == 0);
+    remove(path);
+    printf("%s completed successfully\n", __func__);
+}
+
 #endif

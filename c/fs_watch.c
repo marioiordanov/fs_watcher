@@ -6,6 +6,7 @@ int main()
 {
     test_ordering_of_modify_with_3_events();
     test_multiple_file_moves_outside_of_watched_directory();
+    test_file_renamed();
     printf("all tests passed\n");
     return 0;
 }
