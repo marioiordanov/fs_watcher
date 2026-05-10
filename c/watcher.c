@@ -1004,10 +1004,10 @@ void test_multiple_file_moves_outside_of_watched_directory()
     FSEventStreamEventFlags file_renamed = kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemRenamed;
 
     EventData events[4] = {
-        { .inode = 132460857, .eventId = 4736588, .flags = file_renamed + 1048576},
-         { .inode = 129974653, .eventId = 4736592, .flags = file_renamed },
-         { .inode = 132784364, .eventId = 4736606, .flags = file_renamed },
-         { .inode = 132751929, .eventId = 4736618, .flags = file_renamed }
+        { .inode = 1, .eventId = 4736588, .flags = file_renamed + 1048576},
+         { .inode = 2, .eventId = 4736592, .flags = file_renamed },
+         { .inode = 3, .eventId = 4736606, .flags = file_renamed },
+         { .inode = 4, .eventId = 4736618, .flags = file_renamed }
     };
 
     size_t path_buffer_to_fill = sizeof(events[0].path) - 1;
